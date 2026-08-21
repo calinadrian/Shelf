@@ -273,8 +273,8 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 /* ============ Library grid ============ */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 24px 18px; }
 .grid.list-view { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
-.card { cursor: pointer; outline: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-.list-view .card { display: flex; align-items: center; gap: 14px; padding: 10px 14px; background: var(--surface); }
+.grid:not(.list-view) .card { cursor: pointer; outline: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; display: flex; flex-direction: column; }
+.list-view .card { display: flex; flex-direction: row; align-items: center; gap: 14px; padding: 10px 14px; background: var(--surface); }
 .list-view .card + .card { border-top: 1px solid var(--line); }
 .list-view .cover-wrap { width: 42px; height: 63px; flex: none; aspect-ratio: auto; border-radius: 5px; }
 .list-view .cover-wrap > .badge { display: none; }
@@ -283,8 +283,11 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 .list-view .card-title { margin: 0 0 2px; font-size: 14px; }
 .list-view .list-title-row .card-title { min-width: 0; margin-bottom: 0; }
 .list-view .card-author { margin-bottom: 4px; }
-.card-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.list-status { display: none; position: static; flex: none; font-size: 10px; padding: 3px 8px; }
+.grid:not(.list-view) .card-details { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.grid:not(.list-view) .card-meta { margin-top: auto; }
+.list-view .card-details { min-width: 0; flex: 1; display: block; }
+.list-view .card-meta { margin-top: 0; }
+.list-status { display: none; position: static !important; flex: none; font-size: 10px; padding: 3px 8px; min-width: 0 !important; text-align: left !important; }
 .grid.list-view .list-status { display: inline-flex !important; position: static; }
 .grid.list-view .list-title-row .card-title { flex: 1; }
 .page-progress { color: var(--muted); font-size: 12px; }

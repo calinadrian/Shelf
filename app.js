@@ -667,6 +667,7 @@ function openModal(book, mode) {
   else cover.classList.add('hidden');
 
   $('#fStatus').value = STATUSES.some((s) => s.value === book.status) ? book.status : 'want';
+  updateRatingVisibility();
   renderRatingInput();
   $('#fStart').value = book.startDate || '';
   $('#fFinish').value = book.finishDate || '';
@@ -720,6 +721,16 @@ function syncDateDisplay(id) {
   $(`#${id}Display`).value = date
     ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date)
     : '';
+}
+
+/* Rating is only meaningful for books you've actually read. */
+function updateRatingVisibility() {
+  const isRead = $('#fStatus').value === 'read';
+  $('#ratingField').hidden = !isRead;
+  if (!isRead) {
+    modalRating = 0;
+    renderRatingInput();
+  }
 }
 
 function renderCalendar() {
@@ -804,6 +815,10 @@ async function saveFromModal() {
   book.currentPage = Math.max(0, Number($('#fCurrentPage').value) || 0);
   const pageCount = Number($('#fPageCount').value);
   book.pageCount = pageCount > 0 ? pageCount : null;
+  // Clamp current page to total pages
+  if (book.pageCount && book.currentPage > book.pageCount) {
+    book.currentPage = book.pageCount;
+  }
   book.startDate = $('#fStart').value || null;
   book.finishDate = $('#fFinish').value || null;
   if (!book.addedAt) book.addedAt = new Date().toISOString();
@@ -981,6 +996,8 @@ function bindEvents() {
     const card = e.target.closest('.card');
     if (card) { e.preventDefault(); openCard(card); }
   });
+
+  $('#fStatus').addEventListener('change', updateRatingVisibility);
 
   // Filters & sort
   $('#statusFilter').addEventListener('change', (e) => { statusFilter = e.target.value; renderLibrary(); });
