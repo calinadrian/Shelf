@@ -129,11 +129,13 @@ public class TextToSpeechPlugin extends Plugin {
         stopAudioTrack();
         worker.execute(() -> {
             boolean resolved = false;
+            AudioTrack track = null;
             try {
                 emitState("loading");
                 ensureEngine(model);
                 call.resolve();
                 resolved = true;
+                long framesQueued = 0;
                 for (SpeechPart part : parts) {
                     // Short chunks make the first spoken audio available much sooner on
                     // mid-range phones, while sentence boundaries keep speech natural.
@@ -143,14 +145,23 @@ public class TextToSpeechPlugin extends Plugin {
                         if (generation != playbackGeneration.get()) return;
                         while (paused && generation == playbackGeneration.get()) Thread.sleep(35);
                         if (generation != playbackGeneration.get()) return;
+                        if (track == null) {
+                            track = createAudioTrack(audio.getSampleRate());
+                            audioTrack = track;
+                            track.play();
+                        } else if (track.getSampleRate() != audio.getSampleRate()) {
+                            throw new IllegalStateException("Kokoro changed sample rate during playback");
+                        }
                         emitState("speaking");
-                        playAudio(audio, generation);
+                        framesQueued = playAudio(audio, generation, track, framesQueued);
                     }
                 }
                 if (generation == playbackGeneration.get()) emitState("ended");
             } catch (Exception error) {
-                if (generation == playbackGeneration.get()) emitState("error");
+                if (generation == playbackGeneration.get()) emitError(error);
                 if (!resolved) call.reject(error.getMessage(), error);
+            } finally {
+                releaseAudioTrack(track);
             }
         });
     }
@@ -221,62 +232,58 @@ public class TextToSpeechPlugin extends Plugin {
         engine = new OfflineTts(null, config);
     }
 
-    private void playAudio(GeneratedAudio generated, int generation) throws InterruptedException {
-        float[] samples = generated.getSamples();
-        if (samples.length == 0) return;
-        int sampleRate = generated.getSampleRate();
+    private AudioTrack createAudioTrack(int sampleRate) {
         int minimumBuffer = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_FLOAT
         );
         if (minimumBuffer <= 0) throw new IllegalStateException("This phone could not create a speech audio buffer");
-        int bufferBytes = Math.max(minimumBuffer, Math.min(samples.length, sampleRate / 2) * Float.BYTES);
-        AudioTrack track = new AudioTrack.Builder()
+        int bufferBytes = Math.max(minimumBuffer, sampleRate / 2 * Float.BYTES);
+        return new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setBufferSizeInBytes(bufferBytes)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build();
-        audioTrack = track;
-        try {
-            track.play();
-            int offset = 0;
-            while (offset < samples.length && generation == playbackGeneration.get()) {
-                while (paused && generation == playbackGeneration.get()) Thread.sleep(35);
-                if (generation != playbackGeneration.get()) return;
-                int count = Math.min(PLAYBACK_WRITE_SAMPLES, samples.length - offset);
-                int written = track.write(samples, offset, count, AudioTrack.WRITE_BLOCKING);
-                if (written < 0) throw new IllegalStateException("Speech playback failed (" + written + ")");
-                if (written == 0) Thread.sleep(10);
-                else offset += written;
-            }
+    }
 
-            // A streaming write completes when samples enter AudioTrack's buffer, not
-            // when the speaker has played them. Wait for every frame so the end of a
-            // sentence cannot be cut off when the track is released.
-            long lastHead = -1;
-            long stalledSince = System.currentTimeMillis();
-            while (generation == playbackGeneration.get()) {
-                while (paused && generation == playbackGeneration.get()) {
-                    stalledSince = System.currentTimeMillis();
-                    Thread.sleep(35);
-                }
-                long head = Integer.toUnsignedLong(track.getPlaybackHeadPosition());
-                if (head >= samples.length) break;
-                if (head != lastHead) {
-                    lastHead = head;
-                    stalledSince = System.currentTimeMillis();
-                } else if (System.currentTimeMillis() - stalledSince > PLAYBACK_STALL_TIMEOUT_MS) {
-                    throw new IllegalStateException("Speech playback stopped responding");
-                }
-                Thread.sleep(20);
-            }
-        } finally {
-            if (audioTrack == track) audioTrack = null;
-            try { track.stop(); } catch (Exception ignored) { }
-            track.release();
+    private long playAudio(GeneratedAudio generated, int generation, AudioTrack track, long framesQueued) throws InterruptedException {
+        float[] samples = generated.getSamples();
+        if (samples.length == 0) return framesQueued;
+        int offset = 0;
+        while (offset < samples.length && generation == playbackGeneration.get()) {
+            while (paused && generation == playbackGeneration.get()) Thread.sleep(35);
+            if (generation != playbackGeneration.get()) return framesQueued;
+            int count = Math.min(PLAYBACK_WRITE_SAMPLES, samples.length - offset);
+            int written = track.write(samples, offset, count, AudioTrack.WRITE_BLOCKING);
+            if (written < 0) throw new IllegalStateException("Speech playback failed (" + written + ")");
+            if (written == 0) Thread.sleep(10);
+            else offset += written;
         }
+
+        // The playback head is cumulative for this page-long stream. Waiting for
+        // the cumulative target preserves every sentence ending without repeatedly
+        // allocating and tearing down Android audio tracks.
+        long targetFrames = framesQueued + offset;
+        long lastHead = -1;
+        long stalledSince = System.currentTimeMillis();
+        while (generation == playbackGeneration.get()) {
+            while (paused && generation == playbackGeneration.get()) {
+                stalledSince = System.currentTimeMillis();
+                Thread.sleep(35);
+            }
+            long head = Integer.toUnsignedLong(track.getPlaybackHeadPosition());
+            if (head >= targetFrames) break;
+            if (head != lastHead) {
+                lastHead = head;
+                stalledSince = System.currentTimeMillis();
+            } else if (System.currentTimeMillis() - stalledSince > PLAYBACK_STALL_TIMEOUT_MS) {
+                throw new IllegalStateException("Speech playback stopped responding");
+            }
+            Thread.sleep(20);
+        }
+        return targetFrames;
     }
 
     private void downloadArchive(File destination) throws Exception {
@@ -380,6 +387,13 @@ public class TextToSpeechPlugin extends Plugin {
         if (track != null) try { track.stop(); } catch (Exception ignored) { }
     }
 
+    private void releaseAudioTrack(AudioTrack track) {
+        if (track == null) return;
+        if (audioTrack == track) audioTrack = null;
+        try { track.stop(); } catch (Exception ignored) { }
+        track.release();
+    }
+
     private void releaseEngine() {
         if (engine != null) { engine.release(); engine = null; }
     }
@@ -387,6 +401,14 @@ public class TextToSpeechPlugin extends Plugin {
     private void emitState(String state) {
         JSObject data = new JSObject();
         data.put("state", state);
+        notifyListeners("stateChange", data);
+    }
+
+    private void emitError(Exception error) {
+        JSObject data = new JSObject();
+        data.put("state", "error");
+        String message = error.getMessage();
+        data.put("message", message == null || message.isBlank() ? error.getClass().getSimpleName() : message);
         notifyListeners("stateChange", data);
     }
 

@@ -2739,13 +2739,13 @@ function bindEvents() {
   }
   const speechPlugin = nativeSpeechPlugin();
   if (speechPlugin?.addListener) {
-    speechPlugin.addListener('stateChange', ({ state }) => {
+    speechPlugin.addListener('stateChange', ({ state, message }) => {
       const readAloud = activeReader?.readAloud;
       if (!readAloud || readAloud.status === 'stopped') return;
       if (state === 'ended') advanceReadAloud(readAloud);
       else if (state === 'error') {
         stopReadAloud();
-        toast('Read aloud stopped because speech failed');
+        toast(`Read aloud stopped: ${message || 'audio playback failed'}`);
       } else if (state === 'loading' || state === 'paused' || state === 'speaking') {
         readAloud.status = state;
         updateReadAloudUi();
