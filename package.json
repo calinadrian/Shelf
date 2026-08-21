@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Shelf — a mobile book tracker (Capacitor wrapper around the web app)",
   "scripts": {
+    "build:reader": "esbuild reader-libs-entry.js --bundle --format=iife --outfile=reader-libs.js",
     "test": "node --test",
     "check": "node --check app.js && node --check shelf-core.js && node --test && node sync-web.mjs --check",
     "sync:web": "node sync-web.mjs",
@@ -19,9 +20,13 @@
     "@capacitor/app": "^8.0.0",
     "@capacitor/cli": "^8.0.0",
     "@capacitor/core": "^8.0.0",
-    "@capacitor/ios": "^8.0.0"
+    "@capacitor/ios": "^8.0.0",
+    "@lingo-reader/epub-parser": "0.4.6",
+    "@lingo-reader/mobi-parser": "0.4.6",
+    "pdfjs-dist": "5.4.624"
   },
   "devDependencies": {
-    "@capacitor/assets": "^3.0.5"
+    "@capacitor/assets": "^3.0.5",
+    "esbuild": "0.25.9"
   }
 }

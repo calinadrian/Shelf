@@ -80,6 +80,7 @@ let modalRating = 0;
 let saveInFlight = false;
 let calendarTarget = null;
 let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+let activeReader = null;
 const PROGRESS_KEY = 'shelf-progress';
 const STREAK_KEY = 'shelf-streak';
 const UPDATE_REPO = 'calinadrian/Shelf';
@@ -648,6 +649,7 @@ function renderLibrary() {
         <div class="card-meta">
           ${b.status && b.status !== 'want' ? `<div class="stars small">${b.rating ? starsMarkup(b.rating) : '<span class="muted">No rating</span>'}</div>` : ''}
           <span class="page-progress">${b.currentPage || 0}${b.pageCount ? ` / ${b.pageCount} pages` : ' pages'}</span>
+          ${b.fileData ? `<button type="button" class="card-read" data-read-id="${esc(b.id)}">Read</button>` : ''}
         </div>
       </div>
     </article>`).join('');
@@ -709,6 +711,7 @@ function openModal(book, mode) {
   pc.value = book.pageCount || '';
   $('#fNotes').value = book.notes || '';
   $('#deleteBtn').classList.toggle('hidden', mode !== 'edit');
+  $('#readBtn').classList.toggle('hidden', !book.fileData || mode !== 'edit');
 
   $('#modalBackdrop').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
@@ -720,6 +723,180 @@ function closeModal() {
   closeCalendar();
   modalBook = null;
   document.body.style.overflow = '';
+}
+
+/* ---------------- Local book import & reader ---------------- */
+
+function bookFormat(file) {
+  const extension = file.name.split('.').pop().toLowerCase();
+  if (!['epub', 'mobi', 'pdf'].includes(extension)) throw new Error('Choose an EPUB, MOBI, or PDF file.');
+  return extension;
+}
+
+async function dataUrlFromObjectUrl(url) {
+  if (!url) return null;
+  try {
+    const blob = await fetch(url).then((response) => response.blob());
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch { return null; }
+}
+
+async function inspectLocalBook(file, format) {
+  if (format === 'pdf') {
+    const pdfjs = window.ShelfReaderLibs.pdfjs;
+    pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.mjs';
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const metadata = await pdf.getMetadata().catch(() => ({ info: {} }));
+    const result = { title: metadata.info?.Title, author: metadata.info?.Author, pageCount: pdf.numPages };
+    await pdf.destroy();
+    return result;
+  }
+  const init = format === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
+  const parsed = await init(file);
+  const metadata = parsed.getMetadata() || {};
+  const creators = metadata.creator || metadata.author || [];
+  const author = Array.isArray(creators)
+    ? creators.map((item) => typeof item === 'string' ? item : item.contributor).filter(Boolean).join(', ')
+    : String(creators || '');
+  const coverUrl = parsed.getCoverImage?.();
+  const result = {
+    title: metadata.title,
+    author,
+    description: metadata.description || '',
+    coverData: await dataUrlFromObjectUrl(coverUrl),
+    readerSections: parsed.getSpine().length,
+  };
+  parsed.destroy();
+  return result;
+}
+
+async function importLocalBook(file) {
+  const format = bookFormat(file);
+  const details = await inspectLocalBook(file, format);
+  const fallbackTitle = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  const book = normalizeBook({
+    id: newId(), title: details.title || fallbackTitle || 'Untitled', author: details.author || '',
+    description: details.description || '', coverData: details.coverData || null,
+    pageCount: details.pageCount || null, currentPage: 0, status: 'reading', rating: 0, notes: '', tags: [],
+    addedAt: new Date().toISOString(), startDate: localDateKey(), finishDate: null,
+    fileName: file.name, fileFormat: format, fileData: file.slice(0, file.size, file.type),
+    readerPosition: 0, readerSections: details.readerSections || details.pageCount || 1,
+  });
+  await dbPut(book);
+  createBookQuest(book);
+  await reloadLibrary();
+  switchTab('library');
+  toast(`Imported “${book.title}”`);
+  await openReader(book);
+}
+
+function readerDocument(html, css, dark) {
+  const colors = dark ? 'color:#ece3d0;background:#16130e' : 'color:#211d16;background:#fffcf5';
+  const stylesheets = (css || []).map((item) => `<link rel="stylesheet" href="${esc(item.href)}">`).join('');
+  return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${stylesheets}<style>html{${colors}}body{max-width:46rem;margin:0 auto;padding:2rem 8vw;font:18px/1.7 Georgia,serif}img,svg{max-width:100%;height:auto}a{color:#3f7650}pre{white-space:pre-wrap}</style>${html}`;
+}
+
+function setReaderChrome(hidden) {
+  const reader = $('#reader');
+  const header = reader.querySelector('.reader-header');
+  const controls = reader.querySelector('.reader-controls');
+  reader.classList.toggle('reader-chrome-hidden', hidden);
+  header.setAttribute('aria-hidden', String(hidden));
+  controls.setAttribute('aria-hidden', String(hidden));
+  header.inert = hidden;
+  controls.inert = hidden;
+  if (activeReader) activeReader.chromeHidden = hidden;
+}
+
+function handleReaderScroll(scrollTop) {
+  if (!activeReader) return;
+  const previous = activeReader.lastScrollTop ?? 0;
+  const delta = scrollTop - previous;
+  activeReader.lastScrollTop = scrollTop;
+  if (scrollTop <= 12) setReaderChrome(false);
+  else if (delta > 6 && scrollTop > 48) setReaderChrome(true);
+  else if (delta < -6) setReaderChrome(false);
+}
+
+function bindReflowableReaderGestures() {
+  const frame = $('#readerPage');
+  const doc = frame.contentDocument;
+  if (!doc || !activeReader) return;
+  activeReader.lastScrollTop = doc.scrollingElement?.scrollTop || 0;
+  doc.addEventListener('scroll', () => handleReaderScroll(doc.scrollingElement?.scrollTop || 0), { passive: true });
+  doc.addEventListener('click', () => setReaderChrome(!activeReader?.chromeHidden));
+}
+
+async function renderReaderPosition(position) {
+  if (!activeReader) return;
+  const { book, parser, pdf } = activeReader;
+  const total = pdf ? pdf.numPages : parser.getSpine().length;
+  activeReader.position = Math.max(0, Math.min(Number(position) || 0, total - 1));
+  activeReader.lastScrollTop = 0;
+  setReaderChrome(false);
+  $('#readerStage').scrollTop = 0;
+  $('#readerLoading').classList.remove('hidden');
+  $('#readerPage').classList.add('hidden');
+  $('#readerPdf').classList.add('hidden');
+  if (pdf) {
+    const page = await pdf.getPage(activeReader.position + 1);
+    const canvas = $('#readerPdf');
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, ($('#readerStage').clientWidth - 24) / base.width);
+    const viewport = page.getViewport({ scale: Math.max(.5, scale) });
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    canvas.classList.remove('hidden');
+  } else {
+    const spine = parser.getSpine();
+    const chapter = await parser.loadChapter(spine[activeReader.position].id);
+    $('#readerPage').srcdoc = readerDocument(chapter?.html || '<p>This section is empty.</p>', chapter?.css, activeReader.dark);
+    $('#readerPage').classList.remove('hidden');
+  }
+  $('#readerLoading').classList.add('hidden');
+  $('#readerPosition').textContent = `${activeReader.position + 1} of ${total}`;
+  $('#readerProgress').max = total; $('#readerProgress').value = activeReader.position + 1;
+  $('#readerPrev').disabled = activeReader.position === 0;
+  $('#readerNext').disabled = activeReader.position === total - 1;
+  book.readerPosition = activeReader.position;
+  if (pdf) book.currentPage = activeReader.position + 1;
+  dbPut(book).catch(() => {});
+}
+
+async function openReader(book) {
+  closeModal();
+  const file = new File([book.fileData], book.fileName || `book.${book.fileFormat}`, { type: book.fileData.type });
+  $('#reader').classList.remove('hidden'); document.body.style.overflow = 'hidden';
+  $('#readerTitle').textContent = book.title; $('#readerLoading').classList.remove('hidden');
+  try {
+    if (book.fileFormat === 'pdf') {
+      const pdfjs = window.ShelfReaderLibs.pdfjs;
+      pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.mjs';
+      const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
+    } else {
+      const init = book.fileFormat === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
+      const parser = await init(file);
+      activeReader = { book, parser, pdf: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
+    }
+    await renderReaderPosition(activeReader.position);
+  } catch (error) {
+    console.error('Reader failed', error); closeReader(); toast('This book could not be opened.');
+  }
+}
+
+function closeReader() {
+  if (!activeReader && $('#reader').classList.contains('hidden')) return;
+  activeReader?.parser?.destroy(); activeReader?.pdf?.destroy(); activeReader = null;
+  $('#reader').classList.add('hidden');
+  $('#reader').classList.remove('reader-chrome-hidden');
+  $('#readerPage').srcdoc = ''; document.body.style.overflow = '';
+  reloadLibrary().catch(() => {});
 }
 
 /* Build the star row ONCE; subsequent hovers just toggle classes. Rewriting the
@@ -923,7 +1100,8 @@ function backupPayload() {
     format: 'shelf-backup',
     version: 1,
     exportedAt: new Date().toISOString(),
-    books: library,
+    // Binary ebook files stay in IndexedDB; JSON backups keep the library metadata only.
+    books: library.map(({ fileData, ...book }) => book),
     progress: loadProgress(),
     streak: loadStreak(),
   };
@@ -1058,6 +1236,13 @@ function bindEvents() {
     if (book) openModal(book, 'edit');
   };
   grid.addEventListener('click', (e) => {
+    const read = e.target.closest('[data-read-id]');
+    if (read) {
+      e.stopPropagation();
+      const book = library.find((item) => item.id === read.dataset.readId);
+      if (book) openReader(book);
+      return;
+    }
     const card = e.target.closest('.card');
     if (card) openCard(card);
   });
@@ -1081,6 +1266,15 @@ function bindEvents() {
     if (!file) return;
     try { await importBackup(file); }
     catch (err) { console.error('Import failed', err); toast(err.message || 'Could not import backup'); }
+  });
+  $('#bookImportBtn').addEventListener('click', () => $('#bookImportFile').click());
+  $('#bookImportFile').addEventListener('change', async (e) => {
+    const [file] = e.target.files; e.target.value = '';
+    if (!file) return;
+    $('#bookImportBtn').disabled = true; $('#bookImportBtn').textContent = 'Importing…';
+    try { await importLocalBook(file); }
+    catch (err) { console.error('Book import failed', err); toast(err.message || 'Could not import this book'); }
+    finally { $('#bookImportBtn').disabled = false; $('#bookImportBtn').textContent = 'Import book'; }
   });
 
   // Silently clamp page inputs to each other (no browser validation popup)
@@ -1133,11 +1327,31 @@ function bindEvents() {
   $('#bookForm').addEventListener('submit', (e) => { e.preventDefault(); saveFromModal(); });
   $('#cancelBtn').addEventListener('click', closeModal);
   $('#deleteBtn').addEventListener('click', deleteFromModal);
+  $('#readBtn').addEventListener('click', () => { if (modalBook?.fileData) openReader(modalBook); });
   $('#modalBackdrop').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (calendarTarget) closeCalendar();
+    if (!$('#reader').classList.contains('hidden')) closeReader();
+    else if (calendarTarget) closeCalendar();
     else closeModal();
+  });
+  $('#readerClose').addEventListener('click', closeReader);
+  $('#readerPage').addEventListener('load', bindReflowableReaderGestures);
+  $('#readerStage').addEventListener('scroll', (e) => {
+    if (activeReader?.pdf) handleReaderScroll(e.currentTarget.scrollTop);
+  }, { passive: true });
+  $('#readerStage').addEventListener('click', (e) => {
+    if (!activeReader?.pdf || e.target === $('#readerLoading')) return;
+    setReaderChrome(!activeReader.chromeHidden);
+  });
+  $('#readerPrev').addEventListener('click', () => renderReaderPosition(activeReader.position - 1));
+  $('#readerNext').addEventListener('click', () => renderReaderPosition(activeReader.position + 1));
+  $('#readerProgress').addEventListener('change', (e) => renderReaderPosition(Number(e.target.value) - 1));
+  $('#readerTheme').addEventListener('click', () => {
+    if (!activeReader) return;
+    activeReader.dark = !activeReader.dark;
+    $('#reader').classList.toggle('reader-dark', activeReader.dark);
+    renderReaderPosition(activeReader.position);
   });
 
   document.querySelectorAll('.date-display').forEach((input) => {
@@ -1187,8 +1401,10 @@ function bindEvents() {
   if (window.Capacitor && window.Capacitor.isNativePlatform() && window.Capacitor.Plugins?.App) {
     const App = window.Capacitor.Plugins.App;
     App.addListener('backButton', () => {
+      const readerOpen = !$('#reader').classList.contains('hidden');
       const modalOpen = !$('#modalBackdrop').classList.contains('hidden');
-      if (modalOpen) closeModal();
+      if (readerOpen) closeReader();
+      else if (modalOpen) closeModal();
       else App.exitApp().catch(() => {});
     });
   }

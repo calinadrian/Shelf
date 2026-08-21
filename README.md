@@ -4,6 +4,11 @@ Shelf is a local-first book tracker for the web and Android. Search Open Library
 track reading progress and ratings, and complete reading quests without creating
 an account.
 
+The Library can also import EPUB, MOBI, and PDF ebooks for offline reading inside
+Shelf. Imported files and the last reading position are stored locally on the
+device. JSON backups include ebook metadata, but intentionally omit the binary
+book files; re-import those files after restoring a backup.
+
 ## Development
 
 Requirements: Node.js and, for Android builds, Android Studio with the Android SDK.

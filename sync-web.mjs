@@ -8,7 +8,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const web = join(root, "www");
 const checkOnly = process.argv.includes("--check");
 
-const files = ["index.html", "shelf-core.js", "app.js", "styles.css", "manifest.json", "capacitor.config.json"];
+const files = ["index.html", "shelf-core.js", "reader-shim.js", "reader-libs.js", "pdf.worker.mjs", "app.js", "styles.css", "manifest.json", "capacitor.config.json"];
 
 if (checkOnly) {
   const stale = files.filter((f) => {
