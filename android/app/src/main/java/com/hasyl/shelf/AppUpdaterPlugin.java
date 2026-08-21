@@ -60,7 +60,7 @@ public class AppUpdaterPlugin extends Plugin {
         new Thread(() -> {
             HttpURLConnection connection = null;
             try {
-                URL latest = new URL("https://github.com/calinadrian/Shelf/releases/latest");
+                URL latest = new URL("https://github.com/calinadrian/Shelf/releases/latest?_=" + System.currentTimeMillis());
                 connection = (HttpURLConnection) latest.openConnection();
                 connection.setInstanceFollowRedirects(true);
                 connection.setRequestMethod("HEAD");
