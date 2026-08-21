@@ -27,3 +27,15 @@ replace the current library only after confirmation.
 
 Book search and cover images come from Open Library, so those features require
 an internet connection.
+
+## Android updates from GitHub
+
+The Android app checks the latest release of `calinadrian/Shelf` when the update
+button in the header is pressed. Publish releases with a semantic tag such as
+`v1.1.0` and attach one `.apk` asset. Increase both `versionCode` and
+`versionName` in `android/app/build.gradle` for every release.
+
+Every release APK must be signed with the same production signing key. Android
+will reject an update signed with another key. On Android 8 and newer, the user
+must also allow Shelf to install unknown apps and approve the Android installer;
+the app cannot silently bypass those system confirmations.

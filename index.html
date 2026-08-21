@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-title" content="Shelf" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,380;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css?v=3" />
   <script>
     // Apply the saved (or OS) theme before first paint to avoid a flash.
@@ -39,10 +39,13 @@
     <div class="container topbar-inner">
       <span class="logo">Shelf<span class="logo-dot">.</span></span>
       <nav class="tabs" aria-label="Main views">
-        <button type="button" class="tab active" data-tab="search">Search</button>
-        <button type="button" class="tab" data-tab="library">Library<span class="count-pill" id="libCount"></span></button>
-        <button type="button" class="tab" data-tab="quests">Quests</button>
+        <button type="button" class="tab active" data-tab="search"><svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><span>Search</span></button>
+        <button type="button" class="tab" data-tab="library"><svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h11a2 2 0 0 1 2 2V20H7a2 2 0 0 1-2-2Z"/><path d="M7 16h11M8 8h6"/></svg><span>Library</span><span class="count-pill" id="libCount"></span></button>
+        <button type="button" class="tab" data-tab="quests"><svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8M9 2h6v4H9zM6 5h12v16H6z"/><path d="m9 13 2 2 4-5"/></svg><span>Quests</span></button>
       </nav>
+      <button type="button" class="update-toggle" id="updateBtn" aria-label="Check for updates" title="Check for updates">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5"/><path d="M4 17v-5h5"/><path d="M6.1 9A7 7 0 0 1 18.5 7.5L20 12M4 12l1.5 4.5A7 7 0 0 0 17.9 15"/></svg>
+      </button>
       <button type="button" class="theme-toggle" id="themeToggle" aria-label="Switch to dark mode" title="Toggle dark mode">
         <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
         <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -71,6 +74,15 @@
         <div class="stat"><span class="stat-num" id="statYear">0</span><span class="stat-label">Read this year</span></div>
       </div>
 
+      <details class="library-data">
+        <summary>Backup &amp; restore</summary>
+        <div class="backup-actions" role="group" aria-label="Library backup">
+          <button type="button" class="btn" id="exportBtn">Export backup</button>
+          <button type="button" class="btn" id="importBtn">Import backup</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden />
+        </div>
+      </details>
+
       <div class="toolbar">
         <input type="search" id="librarySearch" class="library-search" placeholder="Search your library" aria-label="Search your library" />
         <select id="statusFilter" aria-label="Filter by status">
@@ -88,11 +100,6 @@
         <div class="view-toggle" role="group" aria-label="Library view">
           <button type="button" class="view-toggle-btn active" data-view="grid" aria-pressed="true">Cards</button>
           <button type="button" class="view-toggle-btn" data-view="list" aria-pressed="false">List</button>
-        </div>
-        <div class="backup-actions" role="group" aria-label="Library backup">
-          <button type="button" class="btn" id="exportBtn">Export</button>
-          <button type="button" class="btn" id="importBtn">Import</button>
-          <input type="file" id="importFile" accept="application/json,.json" hidden />
         </div>
       </div>
 

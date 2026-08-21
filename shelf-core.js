@@ -47,6 +47,19 @@
     return next;
   }
 
+  function versionParts(value) {
+    return String(value || '').replace(/^v/i, '').split(/[.+-]/).slice(0, 3).map((part) => Number(part) || 0);
+  }
+
+  function isNewerVersion(candidate, current) {
+    const next = versionParts(candidate);
+    const installed = versionParts(current);
+    for (let i = 0; i < 3; i++) {
+      if ((next[i] || 0) !== (installed[i] || 0)) return (next[i] || 0) > (installed[i] || 0);
+    }
+    return false;
+  }
+
   function validateBackup(value) {
     if (!value || value.format !== 'shelf-backup' || value.version !== 1 || !Array.isArray(value.books)) {
       throw new Error('This is not a supported Shelf backup.');
@@ -73,5 +86,5 @@
     };
   }
 
-  return { localDateKey, previousLocalDateKey, normalizeBook, updateStreak, validateBackup };
+  return { localDateKey, previousLocalDateKey, normalizeBook, updateStreak, isNewerVersion, validateBackup };
 });

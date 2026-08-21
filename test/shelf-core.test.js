@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { localDateKey, previousLocalDateKey, normalizeBook, updateStreak, validateBackup } = require('../shelf-core.js');
+const { localDateKey, previousLocalDateKey, normalizeBook, updateStreak, isNewerVersion, validateBackup } = require('../shelf-core.js');
 
 test('date keys use local calendar values', () => {
   const date = new Date(2026, 0, 1, 0, 30);
@@ -43,4 +43,10 @@ test('backup validation supplies safe progress defaults', () => {
   const backup = validateBackup({ format: 'shelf-backup', version: 1, books: [{ id: '1', title: 'One' }] });
   assert.deepEqual(backup.progress, { xp: 0, quests: [] });
   assert.deepEqual(backup.streak, { lastDate: '', count: 0 });
+});
+
+test('GitHub release versions are compared numerically', () => {
+  assert.equal(isNewerVersion('v1.2.0', '1.1.9'), true);
+  assert.equal(isNewerVersion('v1.0.0', '1.0.0'), false);
+  assert.equal(isNewerVersion('v1.0.0', '1.1.0'), false);
 });

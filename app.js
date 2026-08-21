@@ -82,7 +82,8 @@ let calendarTarget = null;
 let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 const PROGRESS_KEY = 'shelf-progress';
 const STREAK_KEY = 'shelf-streak';
-const { localDateKey, normalizeBook, updateStreak, validateBackup } = window.ShelfCore;
+const UPDATE_REPO = 'calinadrian/Shelf';
+const { localDateKey, normalizeBook, updateStreak, isNewerVersion, validateBackup } = window.ShelfCore;
 
 /* ---------------- Small helpers ---------------- */
 
@@ -272,6 +273,7 @@ function renderProgress() {
 
   // Render quest tabs
   const activeTab = document.querySelector('.quest-tab.active')?.dataset.questtab || 'active';
+  $('#abandonQuestsBtn').classList.toggle('hidden', activeTab !== 'active');
   renderQuestList(progress, activeTab);
 
   saveProgress(progress);
@@ -355,7 +357,7 @@ function renderQuestList(progress, tab) {
             <span class="quest-badge ${periodLabel}">${periodLabel}</span>
             ${metaHtml}
           </div>
-          <p class="quest-description">${esc(quest.description || 'Make progress in your library.')}</p>
+          <p class="quest-description"><span class="quest-how">How to complete</span>${esc(quest.description || 'Make progress in your library.')}</p>
           ${progressText || progressBarHtml || countdownHtml ? `<div class="quest-footer">${progressText}${countdownHtml}${progressBarHtml}</div>` : ''}
         </div>
         <div class="quest-actions">${actionsHtml}</div>
@@ -483,6 +485,49 @@ function toast(msg) {
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+async function checkForUpdate() {
+  const btn = $('#updateBtn');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  btn.classList.add('checking');
+  try {
+    const response = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (response.status === 404) throw new Error('No GitHub release has been published yet');
+    if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+    const release = await response.json();
+    const apk = (release.assets || []).find((asset) => asset.name?.toLowerCase().endsWith('.apk'));
+    if (!apk) throw new Error('The latest release does not contain an APK');
+
+    let currentVersion = '1.0.0';
+    const App = window.Capacitor?.Plugins?.App;
+    if (window.Capacitor?.isNativePlatform() && App?.getInfo) {
+      currentVersion = (await App.getInfo()).version || currentVersion;
+    }
+    if (!isNewerVersion(release.tag_name, currentVersion)) {
+      toast(`Shelf ${currentVersion} is up to date`);
+      return;
+    }
+
+    const size = apk.size ? ` (${(apk.size / 1048576).toFixed(1)} MB)` : '';
+    if (!window.confirm(`Shelf ${release.tag_name} is available${size}. Download and install it?`)) return;
+    const updater = window.Capacitor?.Plugins?.AppUpdater;
+    if (window.Capacitor?.isNativePlatform() && updater?.downloadAndInstall) {
+      const result = await updater.downloadAndInstall({ url: apk.browser_download_url, fileName: apk.name });
+      toast(result.permissionRequired ? 'Allow installs for Shelf, then tap Update again' : 'Update downloading…');
+    } else {
+      window.open(release.html_url, '_blank', 'noopener');
+    }
+  } catch (err) {
+    console.error('Update check failed', err);
+    toast(err.message || 'Could not check for updates');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('checking');
+  }
 }
 
 /* ---------------- Search (Open Library API) ---------------- */
@@ -977,6 +1022,7 @@ function switchTab(name) {
 function bindEvents() {
   // Tabs
   document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+  $('#updateBtn').addEventListener('click', checkForUpdate);
 
   // Search form
   $('#searchForm').addEventListener('submit', (e) => {
@@ -1161,5 +1207,3 @@ function bindEvents() {
   }
   refreshAll();
 })();
-
-
