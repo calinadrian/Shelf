@@ -672,7 +672,9 @@ function renderLibrary() {
 
 function renderStats() {
   const readBooks = library.filter((b) => b.status === 'read');
-  const pagesRead = readBooks.reduce((sum, b) => sum + (b.pageCount || 0), 0);
+  const pagesRead = library.reduce((sum, book) => sum + Math.max(0,
+    book.status === 'read' && book.pageCount ? book.pageCount : (book.currentPage || 0)
+  ), 0);
   const rated = library.filter((b) => b.rating > 0);
   const avg = rated.length ? rated.reduce((s, b) => s + b.rating, 0) / rated.length : null;
   const year = new Date().getFullYear();
@@ -1070,11 +1072,12 @@ async function repairImportedMetadata() {
 function readerDocument(html, css, dark) {
   const colors = dark ? 'color:#ece3d0;background:#16130e' : 'color:#211d16;background:#fffcf5';
   const stylesheets = (css || []).map((item) => `<link rel="stylesheet" href="${esc(item.href)}">`).join('');
-  return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${stylesheets}<style>html{${colors}}body{max-width:46rem;margin:0 auto;padding:2rem 8vw;font:18px/1.7 Georgia,serif}img,svg{max-width:100%;height:auto}a{color:#3f7650}pre{white-space:pre-wrap}</style>${html}`;
+  return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${stylesheets}<style>html{${colors};overscroll-behavior-y:contain;touch-action:pan-y}body{max-width:46rem;margin:0 auto;padding:2rem 8vw;font:18px/1.7 Georgia,serif;color:inherit;background:inherit}img,svg{max-width:100%;height:auto}a{color:#3f7650}pre{white-space:pre-wrap}mark.shelf-highlight{color:inherit;background:#f2c94c99;border-radius:.15em;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer}mark.shelf-note{background:#7db7e58c;text-decoration:underline dotted;cursor:pointer}</style>${html}`;
 }
 
 function setReaderChrome(hidden) {
   const reader = $('#reader');
+  if (reader.classList.contains('reader-chrome-hidden') === hidden) return;
   const header = reader.querySelector('.reader-header');
   const controls = reader.querySelector('.reader-controls');
   reader.classList.toggle('reader-chrome-hidden', hidden);
@@ -1088,11 +1091,136 @@ function setReaderChrome(hidden) {
 function handleReaderScroll(scrollTop) {
   if (!activeReader) return;
   const previous = activeReader.lastScrollTop ?? 0;
-  const delta = scrollTop - previous;
   activeReader.lastScrollTop = scrollTop;
-  if (scrollTop <= 12) setReaderChrome(false);
-  else if (delta > 6 && scrollTop > 48) setReaderChrome(true);
-  else if (delta < -6) setReaderChrome(false);
+  // Keep the reading viewport's geometry stable at the end of a chapter. The
+  // chrome remains hidden after a real scroll and is restored only by a double
+  // tap, so an overscroll bounce cannot repeatedly show/hide it.
+  if (activeReader.chromeHidden) return;
+  activeReader.scrollDistance = (activeReader.scrollDistance || 0) + Math.abs(scrollTop - previous);
+  if (activeReader.scrollDistance > 4) setReaderChrome(true);
+}
+
+function bindReaderDoubleTap(target) {
+  let lastTap = null;
+  let lastTouchDoubleTap = 0;
+  let pointerStart = null;
+  target.addEventListener('pointerdown', (event) => {
+    pointerStart = { id: event.pointerId, x: event.clientX, y: event.clientY };
+  }, { passive: true });
+  target.addEventListener('pointerup', (event) => {
+    if (!activeReader || (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen')) return;
+    if (!pointerStart || pointerStart.id !== event.pointerId || Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 14) {
+      pointerStart = null;
+      lastTap = null;
+      return;
+    }
+    pointerStart = null;
+    const now = performance.now();
+    const tap = { time: now, x: event.clientX, y: event.clientY };
+    if (lastTap && now - lastTap.time < 360 && Math.hypot(tap.x - lastTap.x, tap.y - lastTap.y) < 32) {
+      event.preventDefault();
+      setReaderChrome(!activeReader.chromeHidden);
+      lastTouchDoubleTap = now;
+      lastTap = null;
+    } else {
+      lastTap = tap;
+    }
+  }, { passive: false });
+
+  // Retain an equivalent gesture for mouse/trackpad testing on desktop.
+  target.addEventListener('dblclick', (event) => {
+    if (!activeReader || performance.now() - lastTouchDoubleTap < 500) return;
+    event.preventDefault();
+    setReaderChrome(!activeReader.chromeHidden);
+  });
+}
+
+function bindReflowableSwipeNavigation(target) {
+  let start = null;
+  target.addEventListener('pointerdown', (event) => {
+    if (!activeReader?.parser || (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen')) return;
+    start = { x: event.clientX, y: event.clientY, time: performance.now(), pointerId: event.pointerId };
+  }, { passive: true });
+  target.addEventListener('pointerup', (event) => {
+    if (!start || !activeReader?.parser || event.pointerId !== start.pointerId) { start = null; return; }
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    const elapsed = performance.now() - start.time;
+    start = null;
+    if (elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    const total = activeReader.parser.getSpine().length;
+    const next = activeReader.position + (dx < 0 ? 1 : -1);
+    if (next < 0 || next >= total) return;
+    event.preventDefault();
+    renderReaderPosition(next, { preserveChrome: true });
+  }, { passive: false });
+  target.addEventListener('pointercancel', () => { start = null; }, { passive: true });
+}
+
+function bindPdfSwipeNavigation(target) {
+  let start = null;
+  target.addEventListener('pointerdown', (event) => {
+    if (!activeReader?.pdf || (activeReader.zoom || 1) > 1.02 || activeReader.pinching || (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen')) return;
+    start = { x: event.clientX, y: event.clientY, time: performance.now(), pointerId: event.pointerId };
+  }, { passive: true });
+  target.addEventListener('pointerup', (event) => {
+    if (!start || !activeReader?.pdf || activeReader.pinching || (activeReader.zoom || 1) > 1.02 || event.pointerId !== start.pointerId) { start = null; return; }
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    const elapsed = performance.now() - start.time;
+    start = null;
+    if (elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    const next = activeReader.position + (dx < 0 ? 1 : -1);
+    if (next < 0 || next >= activeReader.pdf.numPages) return;
+    event.preventDefault();
+    renderReaderPosition(next, { preserveChrome: true });
+  }, { passive: false });
+  target.addEventListener('pointercancel', () => { start = null; }, { passive: true });
+}
+
+function bindPdfPinchZoom(target) {
+  const pointers = new Map();
+  let initialDistance = 0;
+  let initialZoom = 1;
+  let previewZoom = 1;
+
+  const distance = () => {
+    const [a, b] = [...pointers.values()];
+    return a && b ? Math.hypot(b.x - a.x, b.y - a.y) : 0;
+  };
+
+  target.addEventListener('pointerdown', (event) => {
+    if (!activeReader?.pdf || (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen')) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size === 2) {
+      initialDistance = distance();
+      initialZoom = activeReader.zoom || 1;
+      previewZoom = initialZoom;
+      activeReader.pinching = true;
+    }
+  }, { passive: true });
+
+  target.addEventListener('pointermove', (event) => {
+    if (!pointers.has(event.pointerId)) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (!activeReader?.pinching || pointers.size < 2 || !initialDistance) return;
+    event.preventDefault();
+    previewZoom = Math.max(1, Math.min(3, initialZoom * distance() / initialDistance));
+    const canvas = $('#readerPdf');
+    canvas.style.transform = `scale(${previewZoom / initialZoom})`;
+  }, { passive: false });
+
+  const finish = (event) => {
+    pointers.delete(event.pointerId);
+    if (!activeReader?.pinching || pointers.size >= 2) return;
+    activeReader.pinching = false;
+    activeReader.zoom = previewZoom;
+    const canvas = $('#readerPdf');
+    canvas.style.transform = '';
+    renderPdfPage().catch((error) => console.error('PDF zoom failed', error));
+  };
+  target.addEventListener('pointerup', finish, { passive: true });
+  target.addEventListener('pointercancel', finish, { passive: true });
 }
 
 function bindReflowableReaderGestures() {
@@ -1100,8 +1228,201 @@ function bindReflowableReaderGestures() {
   const doc = frame.contentDocument;
   if (!doc || !activeReader) return;
   activeReader.lastScrollTop = doc.scrollingElement?.scrollTop || 0;
+  activeReader.scrollDistance = 0;
+  applyStoredHighlights(doc);
+  if (activeReader.pendingScrollRatio != null) {
+    const ratio = activeReader.pendingScrollRatio;
+    activeReader.pendingScrollRatio = null;
+    const restore = () => {
+      const root = doc.scrollingElement;
+      if (root) root.scrollTop = ratio * Math.max(0, root.scrollHeight - root.clientHeight);
+    };
+    requestAnimationFrame(restore);
+    setTimeout(restore, 120);
+  }
   doc.addEventListener('scroll', () => handleReaderScroll(doc.scrollingElement?.scrollTop || 0), { passive: true });
-  doc.addEventListener('click', () => setReaderChrome(!activeReader?.chromeHidden));
+  bindReaderDoubleTap(doc);
+  bindReflowableSwipeNavigation(doc);
+  doc.addEventListener('selectionchange', updateReaderSelectionActions);
+  doc.addEventListener('click', (event) => {
+    const mark = event.target.closest?.('mark.shelf-highlight');
+    if (!mark || !activeReader?.parser) return;
+    const id = mark.dataset.highlightId;
+    const annotation = (activeReader.book.readerHighlights || []).find((item) => item.id === id);
+    if (annotation?.note) {
+      toast(annotation.note);
+      return;
+    }
+    activeReader.book.readerHighlights = (activeReader.book.readerHighlights || []).filter((item) => item.id !== id);
+    mark.replaceWith(...mark.childNodes);
+    dbPut(activeReader.book).catch(() => {});
+    toast('Highlight removed');
+  });
+}
+
+function textOffset(body, node, offset) {
+  const range = body.ownerDocument.createRange();
+  range.selectNodeContents(body);
+  range.setEnd(node, offset);
+  return range.toString().length;
+}
+
+function rangeFromTextOffsets(doc, start, end) {
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+  const range = doc.createRange();
+  let node;
+  let count = 0;
+  let started = false;
+  while ((node = walker.nextNode())) {
+    const next = count + node.data.length;
+    if (!started && start >= count && start <= next) {
+      range.setStart(node, Math.min(node.data.length, start - count));
+      started = true;
+    }
+    if (started && end >= count && end <= next) {
+      range.setEnd(node, Math.min(node.data.length, end - count));
+      return range;
+    }
+    count = next;
+  }
+  return null;
+}
+
+function wrapHighlightRange(range, id, kind = 'highlight', note = '') {
+  const mark = range.startContainer.ownerDocument.createElement('mark');
+  mark.className = `shelf-highlight${kind === 'note' ? ' shelf-note' : ''}`;
+  mark.dataset.highlightId = id;
+  mark.title = note || 'Tap to remove highlight';
+  mark.append(range.extractContents());
+  range.insertNode(mark);
+}
+
+function applyStoredHighlights(doc) {
+  const highlights = (activeReader?.book?.readerHighlights || [])
+    .filter((item) => item.position === activeReader.position)
+    .sort((a, b) => b.start - a.start);
+  highlights.forEach((item) => {
+    const range = rangeFromTextOffsets(doc, item.start, item.end);
+    if (range && !range.collapsed) wrapHighlightRange(range, item.id, item.kind, item.note);
+  });
+}
+
+function updateReaderHighlightButton() {
+  const button = $('#readerHighlight');
+  const selection = activeReader?.parser ? $('#readerPage').contentWindow?.getSelection() : null;
+  button.disabled = !selection || selection.isCollapsed || !selection.toString().trim();
+}
+
+function hideReaderSelectionMenu() {
+  $('#readerSelectionMenu').classList.add('hidden');
+  if (activeReader) activeReader.selectedRange = null;
+}
+
+function updateReaderSelectionActions() {
+  updateReaderHighlightButton();
+  const menu = $('#readerSelectionMenu');
+  const selection = activeReader?.parser ? $('#readerPage').contentWindow?.getSelection() : null;
+  if (!selection || selection.isCollapsed || !selection.toString().trim() || !selection.rangeCount) {
+    menu.classList.add('hidden');
+    return;
+  }
+  const range = selection.getRangeAt(0);
+  activeReader.selectedRange = range.cloneRange();
+  activeReader.selectedText = selection.toString().trim();
+  const rect = range.getBoundingClientRect();
+  menu.classList.remove('hidden');
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - menu.offsetWidth - 8, rect.left))}px`;
+  menu.style.top = `${Math.max(54, rect.top - 8)}px`;
+}
+
+function selectedReaderRange() {
+  if (!activeReader?.parser) return null;
+  const live = $('#readerPage').contentWindow?.getSelection();
+  if (live?.rangeCount && !live.isCollapsed) return live.getRangeAt(0);
+  return activeReader.selectedRange || null;
+}
+
+function createReaderAnnotation(kind, note = '') {
+  const doc = $('#readerPage').contentDocument;
+  const range = selectedReaderRange();
+  if (!doc?.body || !range || !doc.body.contains(range.commonAncestorContainer)) return false;
+  const annotation = {
+    id: newId(), kind, note,
+    position: activeReader.position,
+    start: textOffset(doc.body, range.startContainer, range.startOffset),
+    end: textOffset(doc.body, range.endContainer, range.endOffset),
+    text: range.toString().trim().slice(0, 300),
+    createdAt: new Date().toISOString(),
+  };
+  if (annotation.end <= annotation.start) return false;
+  activeReader.book.readerHighlights = [...(activeReader.book.readerHighlights || []), annotation];
+  wrapHighlightRange(range, annotation.id, kind, note);
+  $('#readerPage').contentWindow?.getSelection()?.removeAllRanges();
+  dbPut(activeReader.book).catch(() => {});
+  hideReaderSelectionMenu();
+  return true;
+}
+
+function saveReaderHighlight() {
+  if (createReaderAnnotation('highlight')) toast('Text highlighted');
+}
+
+async function handleReaderSelectionAction(action) {
+  const text = activeReader?.selectedText || selectedReaderRange()?.toString().trim();
+  if (!text) return;
+  if (action === 'highlight') saveReaderHighlight();
+  else if (action === 'note') {
+    const note = window.prompt('Add a note for this passage:');
+    if (note?.trim() && createReaderAnnotation('note', note.trim())) toast('Note saved');
+  } else if (action === 'translate') {
+    const language = (navigator.language || 'en').split('-')[0];
+    window.open(`https://translate.google.com/?sl=auto&tl=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}&op=translate`, '_blank', 'noopener');
+    hideReaderSelectionMenu();
+  } else if (action === 'copy') {
+    await navigator.clipboard.writeText(text);
+    hideReaderSelectionMenu();
+    toast('Copied');
+  } else if (action === 'share') {
+    if (navigator.share) await navigator.share({ text });
+    else { await navigator.clipboard.writeText(text); toast('Copied for sharing'); }
+    hideReaderSelectionMenu();
+  }
+}
+
+function updateReaderBookmarkButton() {
+  const button = $('#readerBookmark');
+  const bookmark = activeReader?.book?.readerBookmark;
+  const available = Boolean(activeReader?.parser);
+  button.classList.toggle('hidden', !available);
+  button.classList.toggle('has-bookmark', Boolean(bookmark));
+  button.textContent = bookmark ? '♥' : '♡';
+  const label = bookmark ? 'Go to bookmark' : 'Save bookmark';
+  button.setAttribute('aria-label', label);
+  button.title = label;
+  $('#readerHighlight').classList.toggle('hidden', !available);
+  $('#readerHighlight').disabled = true;
+}
+
+function saveOrOpenReaderBookmark() {
+  if (!activeReader?.parser) return;
+  const { book } = activeReader;
+  const bookmark = book.readerBookmark;
+  if (bookmark) {
+    activeReader.pendingScrollRatio = Math.max(0, Math.min(1, Number(bookmark.scrollRatio) || 0));
+    renderReaderPosition(bookmark.position, { preserveChrome: true });
+    toast('Moved to bookmark');
+    return;
+  }
+  const root = $('#readerPage').contentDocument?.scrollingElement;
+  const scrollRange = root ? Math.max(0, root.scrollHeight - root.clientHeight) : 0;
+  book.readerBookmark = {
+    position: activeReader.position,
+    scrollRatio: scrollRange ? root.scrollTop / scrollRange : 0,
+    createdAt: new Date().toISOString(),
+  };
+  dbPut(book).catch(() => {});
+  updateReaderBookmarkButton();
+  toast('Bookmark saved');
 }
 
 async function renderPdfPage() {
@@ -1115,9 +1436,13 @@ async function renderPdfPage() {
   if (activeReader !== reader || reader.pdfRenderId !== renderId) return;
   const canvas = $('#readerPdf');
   const base = page.getViewport({ scale: 1 });
-  const availableWidth = Math.max(280, $('#readerStage').clientWidth - 24);
-  const displayScale = Math.max(.5, Math.min(2, availableWidth / base.width));
+  const stage = $('#readerStage');
+  const availableWidth = Math.max(280, stage.clientWidth);
+  const availableHeight = Math.max(280, stage.clientHeight);
+  const fitScale = Math.max(.25, Math.min(2, availableWidth / base.width, availableHeight / base.height));
+  const displayScale = fitScale * Math.max(1, Math.min(3, reader.zoom || 1));
   const viewport = page.getViewport({ scale: displayScale });
+  $('#reader').classList.toggle('reader-pdf-zoomed', (reader.zoom || 1) > 1.02);
 
   // Render physical device pixels into the backing canvas while preserving its
   // CSS size. This is the PDF.js high-DPI pattern and prevents browser upscaling.
@@ -1140,13 +1465,15 @@ async function renderPdfPage() {
   if (activeReader === reader && reader.pdfRenderId === renderId) canvas.classList.remove('hidden');
 }
 
-async function renderReaderPosition(position) {
+async function renderReaderPosition(position, { preserveChrome = false } = {}) {
   if (!activeReader) return;
   const { book, parser, pdf } = activeReader;
   const total = pdf ? pdf.numPages : parser.getSpine().length;
   activeReader.position = Math.max(0, Math.min(Number(position) || 0, total - 1));
+  hideReaderSelectionMenu();
   activeReader.lastScrollTop = 0;
-  setReaderChrome(false);
+  activeReader.scrollDistance = 0;
+  if (!preserveChrome) setReaderChrome(false);
   $('#readerStage').scrollTop = 0;
   $('#readerLoading').classList.remove('hidden');
   $('#readerPage').classList.add('hidden');
@@ -1165,7 +1492,14 @@ async function renderReaderPosition(position) {
   $('#readerPrev').disabled = activeReader.position === 0;
   $('#readerNext').disabled = activeReader.position === total - 1;
   book.readerPosition = activeReader.position;
-  if (pdf) book.currentPage = activeReader.position + 1;
+  const previousPages = Math.max(0, book.currentPage || 0);
+  const positionPages = pdf
+    ? activeReader.position + 1
+    : (book.pageCount
+      ? Math.max(1, Math.round(((activeReader.position + 1) / total) * book.pageCount))
+      : activeReader.position + 1);
+  book.currentPage = Math.max(previousPages, positionPages);
+  if (book.currentPage > previousPages) recordDailyRead();
   dbPut(book).catch(() => {});
 }
 
@@ -1178,12 +1512,14 @@ async function openReader(book) {
     if (book.fileFormat === 'pdf') {
       const pdfjs = configurePdfJs();
       const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), verbosity: 0 }).promise;
-      activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
+      activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false, zoom: 1, pinching: false };
     } else {
       const init = book.fileFormat === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
       const parser = await init(file);
       activeReader = { book, parser, pdf: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
     }
+    $('#reader').classList.toggle('reader-pdf-mode', Boolean(activeReader.pdf));
+    updateReaderBookmarkButton();
     await renderReaderPosition(activeReader.position);
   } catch (error) {
     console.error('Reader failed', error); closeReader(); toast('This book could not be opened.');
@@ -1196,7 +1532,12 @@ function closeReader() {
   activeReader?.parser?.destroy(); activeReader?.pdf?.destroy(); activeReader = null;
   $('#reader').classList.add('hidden');
   $('#reader').classList.remove('reader-chrome-hidden');
+  $('#reader').classList.remove('reader-pdf-mode');
+  $('#reader').classList.remove('reader-pdf-zoomed');
+  $('#readerBookmark').classList.add('hidden');
+  $('#readerHighlight').classList.add('hidden');
   $('#readerPage').srcdoc = ''; document.body.style.overflow = '';
+  hideReaderSelectionMenu();
   reloadLibrary().catch(() => {});
 }
 
@@ -1637,14 +1978,24 @@ function bindEvents() {
     else closeModal();
   });
   $('#readerClose').addEventListener('click', closeReader);
+  $('#readerBookmark').addEventListener('click', saveOrOpenReaderBookmark);
+  $('#readerHighlight').addEventListener('mousedown', (event) => event.preventDefault());
+  $('#readerHighlight').addEventListener('click', saveReaderHighlight);
+  $('#readerSelectionMenu').addEventListener('pointerdown', (event) => event.preventDefault());
+  $('#readerSelectionMenu').addEventListener('click', (event) => {
+    const action = event.target.closest('[data-selection-action]')?.dataset.selectionAction;
+    if (action) handleReaderSelectionAction(action).catch((error) => {
+      console.error('Selection action failed', error);
+      toast('That action is not available');
+    });
+  });
   $('#readerPage').addEventListener('load', bindReflowableReaderGestures);
   $('#readerStage').addEventListener('scroll', (e) => {
     if (activeReader?.pdf) handleReaderScroll(e.currentTarget.scrollTop);
   }, { passive: true });
-  $('#readerStage').addEventListener('click', (e) => {
-    if (!activeReader?.pdf || e.target === $('#readerLoading')) return;
-    setReaderChrome(!activeReader.chromeHidden);
-  });
+  bindReaderDoubleTap($('#readerStage'));
+  bindPdfSwipeNavigation($('#readerStage'));
+  bindPdfPinchZoom($('#readerStage'));
   $('#readerPrev').addEventListener('click', () => renderReaderPosition(activeReader.position - 1));
   $('#readerNext').addEventListener('click', () => renderReaderPosition(activeReader.position + 1));
   $('#readerProgress').addEventListener('change', (e) => renderReaderPosition(Number(e.target.value) - 1));
