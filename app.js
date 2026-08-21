@@ -559,13 +559,10 @@ async function checkForUpdate() {
   try {
     const updateUrl = new URL(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
     updateUrl.searchParams.set('_', Date.now().toString());
-    const response = await fetch(updateUrl, {
-      cache: 'no-store',
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'Cache-Control': 'no-cache',
-      },
-    });
+    // The unique query string bypasses stale WebView caches while keeping this
+    // a CORS-simple request. Author-supplied Cache-Control headers trigger a
+    // preflight that GitHub's API rejects, which surfaces only as "Failed to fetch".
+    const response = await fetch(updateUrl);
     if (response.status === 404) throw new Error('No GitHub release has been published yet');
     if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
     const release = await response.json();
