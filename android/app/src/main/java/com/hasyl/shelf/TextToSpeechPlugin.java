@@ -5,6 +5,7 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
@@ -34,6 +35,7 @@ public class TextToSpeechPlugin extends Plugin {
     private List<String> activeChunks = Collections.emptyList();
     private int activeChunkIndex;
     private float activeRate = 1f;
+    private String activeVoice = "";
 
     @Override
     public void load() {
@@ -82,12 +84,30 @@ public class TextToSpeechPlugin extends Plugin {
 
     @PluginMethod
     public void getStatus(PluginCall call) {
-        JSObject result = new JSObject();
-        result.put("installed", true);
-        result.put("downloading", false);
-        result.put("engine", "Android system narrator");
-        result.put("ready", engineReady.isDone() && !engineReady.isCompletedExceptionally());
-        call.resolve(result);
+        worker.execute(() -> {
+            try {
+                TextToSpeech ready = awaitEngine();
+                JSObject result = new JSObject();
+                result.put("installed", true);
+                result.put("downloading", false);
+                result.put("engine", "Android system narrator");
+                result.put("ready", true);
+                JSArray voices = new JSArray();
+                Set<Voice> voiceSet = ready.getVoices();
+                List<Voice> available = voiceSet == null ? new ArrayList<>() : new ArrayList<>(voiceSet);
+                available.sort((left, right) -> voiceLabel(left).compareToIgnoreCase(voiceLabel(right)));
+                for (Voice voice : available) {
+                    JSObject item = new JSObject();
+                    item.put("id", voice.getName());
+                    item.put("label", voiceLabel(voice));
+                    voices.put(item);
+                }
+                result.put("voices", voices);
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject(messageFor(error), error);
+            }
+        });
     }
 
     @PluginMethod
@@ -108,18 +128,21 @@ public class TextToSpeechPlugin extends Plugin {
         if (text.isEmpty()) { call.reject("There is no text to read"); return; }
         List<String> chunks = splitText(text, Math.min(SPEECH_CHUNK_CHARACTERS, TextToSpeech.getMaxSpeechInputLength() - 100));
         float rate = Math.max(.6f, Math.min(1.8f, call.getFloat("rate", 1f)));
+        String voice = call.getString("voice", "");
         int generation = playbackGeneration.incrementAndGet();
         paused = false;
         synchronized (stateLock) {
             activeChunks = chunks;
             activeChunkIndex = 0;
             activeRate = rate;
+            activeVoice = voice;
         }
         emitState("loading", null);
         worker.execute(() -> {
             try {
                 TextToSpeech ready = awaitEngine();
                 ready.stop();
+                applyVoice(ready, voice);
                 ready.setSpeechRate(rate);
                 queueChunks(ready, chunks, 0, generation);
                 call.resolve();
@@ -144,10 +167,12 @@ public class TextToSpeechPlugin extends Plugin {
         final List<String> chunks;
         final int index;
         final float rate;
+        final String voice;
         synchronized (stateLock) {
             chunks = activeChunks;
             index = Math.min(activeChunkIndex, Math.max(0, chunks.size() - 1));
             rate = activeRate;
+            voice = activeVoice;
         }
         if (chunks.isEmpty()) { call.resolve(); return; }
         int generation = playbackGeneration.incrementAndGet();
@@ -157,6 +182,7 @@ public class TextToSpeechPlugin extends Plugin {
             try {
                 TextToSpeech ready = awaitEngine();
                 ready.stop();
+                applyVoice(ready, voice);
                 ready.setSpeechRate(rate);
                 queueChunks(ready, chunks, index, generation);
                 call.resolve();
@@ -199,6 +225,17 @@ public class TextToSpeechPlugin extends Plugin {
         if (best != null) ready.setVoice(best);
     }
 
+    private void applyVoice(TextToSpeech ready, String name) {
+        if (name == null || name.isEmpty()) return;
+        Set<Voice> voices = ready.getVoices();
+        if (voices == null) return;
+        for (Voice voice : voices) if (name.equals(voice.getName())) { ready.setVoice(voice); return; }
+    }
+
+    private static String voiceLabel(Voice voice) {
+        String locale = voice.getLocale() == null ? "" : voice.getLocale().getDisplayName();
+        return locale.isEmpty() ? voice.getName() : locale + " — " + voice.getName();
+    }
     private void queueChunks(TextToSpeech ready, List<String> chunks, int start, int generation) {
         Bundle options = new Bundle();
         for (int index = start; index < chunks.size(); index++) {
