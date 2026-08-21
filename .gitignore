@@ -5,6 +5,7 @@ node_modules/
 android/app/build/
 android/build/
 android/.gradle/
+.gradle-user/
 android/app/*.apk
 android/**/*.dex
 android/**/*.jar
