@@ -1242,15 +1242,23 @@ function bindReflowableSwipeNavigation(target) {
   let start = null;
   target.addEventListener('pointerdown', (event) => {
     if (!activeReader?.parser || (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen')) return;
-    start = { x: event.clientX, y: event.clientY, time: performance.now(), pointerId: event.pointerId };
+    const selection = target.getSelection?.();
+    start = {
+      x: event.clientX,
+      y: event.clientY,
+      time: performance.now(),
+      pointerId: event.pointerId,
+      hadSelection: Boolean(selection && !selection.isCollapsed),
+    };
   }, { passive: true });
   target.addEventListener('pointerup', (event) => {
     if (!start || !activeReader?.parser || event.pointerId !== start.pointerId) { start = null; return; }
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
     const elapsed = performance.now() - start.time;
+    const wasSelecting = start.hadSelection || readerSelectionInteractionActive(target);
     start = null;
-    if (elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+    if (wasSelecting || elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
     event.preventDefault();
     navigateReader(dx < 0 ? 1 : -1);
   }, { passive: false });
@@ -1352,9 +1360,33 @@ function bindReflowableReaderGestures() {
     requestAnimationFrame(restore);
     setTimeout(restore, 120);
   }
-  doc.addEventListener('scroll', () => handleReaderScroll(doc.scrollingElement?.scrollTop || 0), { passive: true });
+  let selectionPageLeft = null;
+  const rememberSelectionPage = () => {
+    if (activeReader?.settings.mode !== 'page') return;
+    const root = doc.scrollingElement;
+    if (!root) return;
+    selectionPageLeft = Math.round(root.scrollLeft / Math.max(1, root.clientWidth)) * root.clientWidth;
+  };
+  doc.addEventListener('selectstart', rememberSelectionPage, { passive: true });
+  doc.addEventListener('pointerdown', () => {
+    if (readerSelectionIsActive(doc)) rememberSelectionPage();
+  }, { passive: true });
+  doc.addEventListener('scroll', () => {
+    const root = doc.scrollingElement;
+    if (selectionPageLeft != null && readerSelectionIsActive(doc) && activeReader?.settings.mode === 'page'
+      && Math.abs(root.scrollLeft - selectionPageLeft) > 1) {
+      root.scrollLeft = selectionPageLeft;
+    }
+    handleReaderScroll(root?.scrollTop || 0);
+  }, { passive: true });
   bindReflowableSwipeNavigation(doc);
   doc.addEventListener('selectionchange', updateReaderSelectionActions);
+  // Android WebView's native selection action bar duplicates Shelf's toolbar.
+  // Prevent the web context menu as a fallback; the native wrapper also hides
+  // its ActionMode while the reader is open, without disabling selection handles.
+  doc.addEventListener('contextmenu', (event) => {
+    if (readerSelectionIsActive(doc)) event.preventDefault();
+  });
   doc.addEventListener('click', (event) => {
     const mark = event.target.closest?.('mark.shelf-highlight');
     if (mark && activeReader?.parser) {
@@ -1370,8 +1402,7 @@ function bindReflowableReaderGestures() {
       }
       return;
     }
-    const selection = doc.getSelection();
-    if (selection && !selection.isCollapsed) return;
+    if (readerSelectionInteractionActive(doc)) return;
     const width = doc.documentElement.clientWidth;
     const x = event.clientX;
     if (activeReader.settings.mode === 'page' && (x < width * .18 || x > width * .82)) {
@@ -1381,8 +1412,18 @@ function bindReflowableReaderGestures() {
   });
 }
 
+function readerSelectionIsActive(doc = $('#readerPage').contentDocument) {
+  const selection = doc?.getSelection?.();
+  return Boolean(selection && !selection.isCollapsed && selection.toString().trim());
+}
+
+function readerSelectionInteractionActive(doc = $('#readerPage').contentDocument) {
+  return readerSelectionIsActive(doc) || Boolean(activeReader?.selectionGuardUntil > performance.now());
+}
+
 function navigateReader(direction) {
   if (!activeReader) return;
+  if (activeReader.parser && readerSelectionInteractionActive()) return;
   if (activeReader.parser && activeReader.settings.mode === 'page') {
     const root = $('#readerPage').contentDocument?.scrollingElement;
     if (root) {
@@ -1460,11 +1501,18 @@ function hideReaderSelectionMenu() {
   if (activeReader) activeReader.selectedRange = null;
 }
 
+function setNativeReaderSelectionMenuSuppressed(suppressed) {
+  const plugin = window.Capacitor?.Plugins?.ReaderSelection;
+  if (!window.Capacitor?.isNativePlatform?.() || !plugin?.setSuppressed) return;
+  plugin.setSuppressed({ suppressed }).catch((error) => console.warn('Could not configure native selection menu', error));
+}
+
 function updateReaderSelectionActions() {
   updateReaderHighlightButton();
   const menu = $('#readerSelectionMenu');
   const selection = activeReader?.parser ? $('#readerPage').contentWindow?.getSelection() : null;
   if (!selection || selection.isCollapsed || !selection.toString().trim() || !selection.rangeCount) {
+    if (activeReader?.selectedRange) activeReader.selectionGuardUntil = performance.now() + 450;
     menu.classList.add('hidden');
     return;
   }
@@ -1802,6 +1850,7 @@ async function openReader(book) {
       const parser = await init(file);
       activeReader = { book, parser, pdf: null, position: book.readerPosition || 0, settings: loadReaderSettings(), lastScrollTop: 0, chromeHidden: false, readingStartedAt: Date.now() };
     }
+    setNativeReaderSelectionMenuSuppressed(Boolean(activeReader.parser));
     $('#reader').classList.toggle('reader-pdf-mode', Boolean(activeReader.pdf));
     applyReaderSettings({ rerender: false });
     updateReaderBookmarkButton();
@@ -1828,6 +1877,7 @@ function closeReader() {
   $('#readerBookmark').classList.add('hidden');
   $('#readerHighlight').classList.add('hidden');
   $('#readerPage').srcdoc = ''; document.body.style.overflow = '';
+  setNativeReaderSelectionMenuSuppressed(false);
   hideReaderSelectionMenu();
   reloadLibrary().catch(() => {});
 }
