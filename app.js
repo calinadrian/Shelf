@@ -1128,7 +1128,7 @@ async function repairImportedMetadata() {
   if (visibleChange) await reloadLibrary();
 }
 
-const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1 };
+const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1, listenVoice: '' };
 
 function loadReaderSettings() {
   try { return { ...DEFAULT_READER_SETTINGS, ...JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)) }; }
@@ -1173,6 +1173,7 @@ function applyReaderSettings({ rerender = true, restoreRatio = null } = {}) {
   $('#readerCurl').checked = settings.curl;
   $('#readerEitherMargin').checked = settings.eitherMargin;
   $('#readerListenRate').value = settings.listenRate;
+  $('#readerListenVoice').value = settings.listenVoice || '';
   document.querySelectorAll('[data-reader-theme]').forEach((button) => button.classList.toggle('active', button.dataset.readerTheme === settings.theme));
   document.querySelectorAll('[data-reader-align]').forEach((button) => button.classList.toggle('active', button.dataset.readerAlign === settings.align));
   document.querySelectorAll('[data-reader-mode]').forEach((button) => button.classList.toggle('active', button.dataset.readerMode === settings.mode));
@@ -1760,19 +1761,41 @@ function nativeSpeechPlugin() {
 
 async function refreshSpeechStatus() {
   const status = $('#readerVoiceModelStatus');
+  const setting = $('#readerVoiceSetting');
+  const select = $('#readerListenVoice');
   const native = nativeSpeechPlugin();
   if (!native?.getStatus) {
     status.textContent = 'Browser voice is used outside the Android app.';
+    const voices = window.speechSynthesis?.getVoices?.() || [];
+    populateSpeechVoices(voices.map((voice) => ({ id: voice.voiceURI, label: `${voice.name} (${voice.lang})` })));
     return false;
   }
   try {
     const speech = await native.getStatus();
-    status.textContent = `${speech.engine || 'Android system narrator'} · no extra model download.`;
+    const voices = Array.isArray(speech.voices) ? speech.voices : [];
+    populateSpeechVoices(voices);
+    status.textContent = speech.engine || 'Android system narrator';
     if (native.prepare) native.prepare().catch(() => {});
     return true;
   } catch {
     status.textContent = 'Could not start the Android system narrator.';
+    setting.classList.add('hidden');
+    select.replaceChildren();
     return false;
+  }
+}
+
+function populateSpeechVoices(voices) {
+  const setting = $('#readerVoiceSetting');
+  const select = $('#readerListenVoice');
+  const current = activeReader?.settings.listenVoice || '';
+  select.innerHTML = voices.map((voice) => `<option value="${esc(voice.id)}">${esc(voice.label || voice.id)}</option>`).join('');
+  setting.classList.toggle('hidden', voices.length < 2);
+  if (voices.some((voice) => voice.id === current)) select.value = current;
+  else if (voices[0] && activeReader) {
+    activeReader.settings.listenVoice = voices[0].id;
+    select.value = voices[0].id;
+    saveReaderSettings(activeReader.settings);
   }
 }
 
@@ -1824,6 +1847,8 @@ function speakBrowserChunk(state) {
   if (state.chunkIndex >= state.chunks.length) { advanceReadAloud(state); return; }
   const utterance = new SpeechSynthesisUtterance(state.chunks[state.chunkIndex]);
   utterance.rate = Number(activeReader.settings.listenRate) || 1;
+  const selectedVoice = window.speechSynthesis.getVoices().find((voice) => voice.voiceURI === activeReader.settings.listenVoice);
+  if (selectedVoice) utterance.voice = selectedVoice;
   utterance.onend = () => {
     if (activeReader?.readAloud !== state || state.status !== 'speaking') return;
     state.chunkIndex++;
@@ -1850,7 +1875,7 @@ async function startReadAloud() {
   try {
     const native = nativeSpeechPlugin();
     if (native) {
-      await native.speak({ text, rate: Number(reader.settings.listenRate) || 1 });
+      await native.speak({ text, rate: Number(reader.settings.listenRate) || 1, voice: reader.settings.listenVoice || '' });
     }
     else if ('speechSynthesis' in window) {
       state.status = 'speaking';
@@ -2502,6 +2527,15 @@ function bindEvents() {
   $('#readerListenRate').addEventListener('change', (event) => {
     if (!activeReader) return;
     activeReader.settings.listenRate = Number(event.target.value) || 1;
+    saveReaderSettings(activeReader.settings);
+    if (activeReader.readAloud?.status === 'speaking') {
+      stopReadAloud();
+      startReadAloud();
+    }
+  });
+  $('#readerListenVoice').addEventListener('change', (event) => {
+    if (!activeReader) return;
+    activeReader.settings.listenVoice = event.target.value;
     saveReaderSettings(activeReader.settings);
     if (activeReader.readAloud?.status === 'speaking') {
       stopReadAloud();
