@@ -17,6 +17,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 @CapacitorPlugin(name = "AppUpdater")
 public class AppUpdaterPlugin extends Plugin {
@@ -51,6 +53,43 @@ public class AppUpdaterPlugin extends Plugin {
     protected void handleOnDestroy() {
         try { getContext().unregisterReceiver(downloadReceiver); } catch (IllegalArgumentException ignored) {}
         super.handleOnDestroy();
+    }
+
+    @PluginMethod
+    public void getLatestRelease(PluginCall call) {
+        new Thread(() -> {
+            HttpURLConnection connection = null;
+            try {
+                URL latest = new URL("https://github.com/calinadrian/Shelf/releases/latest");
+                connection = (HttpURLConnection) latest.openConnection();
+                connection.setInstanceFollowRedirects(true);
+                connection.setRequestMethod("HEAD");
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(15000);
+                connection.setUseCaches(false);
+                connection.setRequestProperty("User-Agent", "Shelf-Android-Updater");
+                int status = connection.getResponseCode();
+                URL resolved = connection.getURL();
+                String path = resolved.getPath();
+                String prefix = "/calinadrian/Shelf/releases/tag/";
+                if (status < 200 || status >= 400 || !"github.com".equalsIgnoreCase(resolved.getHost()) || !path.startsWith(prefix)) {
+                    throw new IllegalStateException("GitHub did not return a release");
+                }
+                String tag = path.substring(prefix.length());
+                if (!tag.matches("v[0-9]+(?:\\.[0-9]+){2}(?:[-._A-Za-z0-9]*)?")) {
+                    throw new IllegalStateException("GitHub returned an invalid release tag");
+                }
+                JSObject result = new JSObject();
+                result.put("tagName", tag);
+                result.put("assetName", "Shelf-" + tag + ".apk");
+                result.put("assetUrl", "https://github.com/calinadrian/Shelf/releases/download/" + tag + "/Shelf-" + tag + ".apk");
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject("Could not check GitHub for updates", error);
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        }, "shelf-update-check").start();
     }
 
     @PluginMethod

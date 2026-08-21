@@ -557,15 +557,23 @@ async function checkForUpdate() {
   btn.disabled = true;
   btn.classList.add('checking');
   try {
-    const updateUrl = new URL(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
-    updateUrl.searchParams.set('_', Date.now().toString());
-    // The unique query string bypasses stale WebView caches while keeping this
-    // a CORS-simple request. Author-supplied Cache-Control headers trigger a
-    // preflight that GitHub's API rejects, which surfaces only as "Failed to fetch".
-    const response = await fetch(updateUrl);
-    if (response.status === 404) throw new Error('No GitHub release has been published yet');
-    if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
-    const release = await response.json();
+    const nativeUpdater = window.Capacitor?.Plugins?.AppUpdater;
+    let release;
+    if (window.Capacitor?.isNativePlatform() && nativeUpdater?.getLatestRelease) {
+      const latest = await nativeUpdater.getLatestRelease();
+      release = {
+        tag_name: latest.tagName,
+        html_url: `https://github.com/${UPDATE_REPO}/releases/tag/${latest.tagName}`,
+        assets: [{ name: latest.assetName, browser_download_url: latest.assetUrl, size: 0 }],
+      };
+    } else {
+      const updateUrl = new URL(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+      updateUrl.searchParams.set('_', Date.now().toString());
+      const response = await fetch(updateUrl);
+      if (response.status === 404) throw new Error('No GitHub release has been published yet');
+      if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+      release = await response.json();
+    }
     const apk = (release.assets || []).find((asset) => asset.name?.toLowerCase().endsWith('.apk'));
     if (!apk) throw new Error('The latest release does not contain an APK');
 
@@ -581,9 +589,8 @@ async function checkForUpdate() {
 
     const size = apk.size ? ` (${(apk.size / 1048576).toFixed(1)} MB)` : '';
     if (!window.confirm(`Shelf ${release.tag_name} is available${size}. Download and install it?`)) return;
-    const updater = window.Capacitor?.Plugins?.AppUpdater;
-    if (window.Capacitor?.isNativePlatform() && updater?.downloadAndInstall) {
-      const result = await updater.downloadAndInstall({ url: apk.browser_download_url, fileName: apk.name });
+    if (window.Capacitor?.isNativePlatform() && nativeUpdater?.downloadAndInstall) {
+      const result = await nativeUpdater.downloadAndInstall({ url: apk.browser_download_url, fileName: apk.name });
       toast(result.permissionRequired ? 'Allow installs for Shelf, then tap Update again' : 'Update downloading…');
     } else {
       window.open(release.html_url, '_blank', 'noopener');
