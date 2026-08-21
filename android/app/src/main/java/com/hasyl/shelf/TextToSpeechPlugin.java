@@ -236,7 +236,6 @@ public class TextToSpeechPlugin extends Plugin {
         String locale = voice.getLocale() == null ? "" : voice.getLocale().getDisplayName();
         return locale.isEmpty() ? voice.getName() : locale + " — " + voice.getName();
     }
-
     private void queueChunks(TextToSpeech ready, List<String> chunks, int start, int generation) {
         Bundle options = new Bundle();
         for (int index = start; index < chunks.size(); index++) {
