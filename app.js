@@ -333,49 +333,47 @@ function renderQuestList(progress, tab) {
     } else if (isAbandoned) {
       metaHtml = `<span class="quest-abandoned">Abandoned</span>`;
     } else {
-      const xpHtml = `<span class="quest-xp">+${quest.xp} XP</span>`;
-      const countdownHtml = quest.expiresAt
+      metaHtml = quest.expiresAt
         ? `<span class="quest-countdown ${Math.ceil((quest.expiresAt - now) / 86400000) > 1 ? 'safe' : ''}">${Math.max(0, Math.ceil((quest.expiresAt - now) / 86400000))}d left</span>`
         : '';
-      metaHtml = `${xpHtml}${countdownHtml ? ` · ${countdownHtml}` : ''}`;
     }
 
-    // Progress bar
+    // Progress info (always show for active quests)
+    let progressText = '';
     let progressBarHtml = '';
-    if (progressInfo && progressInfo.max > 0 && !isDone && !isFailed && !isAbandoned) {
+    if (progressInfo && progressInfo.max > 0) {
       const pct = Math.min(100, Math.round((progressInfo.current / progressInfo.max) * 100));
-      progressBarHtml = `
-        <div class="quest-progress-bar">
-          <div class="quest-progress-track">
-            <span class="quest-progress-fill ${periodLabel}" style="width: ${pct}%"></span>
-          </div>
-          <div class="quest-progress-label">
-            <span>${progressInfo.current} / ${progressInfo.max} ${progressInfo.unit}</span>
-            <span>${pct}%</span>
-          </div>
-        </div>`;
+      if (!isDone && !isFailed && !isAbandoned) {
+        progressText = `<span class="quest-progress-text">${progressInfo.current} / ${progressInfo.max} ${progressInfo.unit}</span>`;
+        progressBarHtml = `<div class="quest-progress-track"><span class="quest-progress-fill ${periodLabel}" style="width: ${pct}%"></span></div>`;
+      } else {
+        progressText = `<span class="quest-progress-text">${progressInfo.current} / ${progressInfo.max} ${progressInfo.unit}</span>`;
+      }
     }
 
     // Action buttons for active quests
     let actionsHtml = '';
     if (quest.status === 'active') {
-      actionsHtml = `<button class="quest-action-btn danger" data-quest-id="${quest.id}" aria-label="Abandon quest">✕ Abandon</button>`;
+      actionsHtml = `<button class="quest-action-btn danger" data-quest-id="${quest.id}" aria-label="Abandon quest">✕</button>`;
     } else if (isDone) {
-      actionsHtml = `<span class="quest-complete">✓ Complete</span>`;
+      actionsHtml = `<span class="quest-complete">✓</span>`;
     } else if (isFailed) {
-      actionsHtml = `<span class="quest-failed">✕ Failed</span>`;
+      actionsHtml = `<span class="quest-failed">✕</span>`;
     } else if (isAbandoned) {
-      actionsHtml = `<span class="quest-abandoned">— Abandoned</span>`;
+      actionsHtml = `<span class="quest-abandoned">—</span>`;
     }
 
     return `
       <article class="quest${isDone || isFailed || isAbandoned ? ' quest-done' : ''}" data-quest-id="${quest.id}">
         <span class="quest-icon" aria-hidden="true">${icon}</span>
-        <div class="quest-copy">
-          <p class="quest-title">${esc(quest.title)}<span class="quest-badge ${periodLabel}">${periodLabel}</span></p>
+        <div class="quest-body">
+          <div class="quest-header">
+            <span class="quest-title">${esc(quest.title)}</span>
+            <span class="quest-badge ${periodLabel}">${periodLabel}</span>
+            ${metaHtml}
+          </div>
           <p class="quest-description">${esc(quest.description || 'Make progress in your library.')}</p>
-          ${progressBarHtml}
-          <p class="quest-meta">${metaHtml}</p>
+          ${progressText || progressBarHtml ? `<div class="quest-footer">${progressText}${progressBarHtml}</div>` : ''}
         </div>
         <div class="quest-actions">${actionsHtml}</div>
       </article>`;
