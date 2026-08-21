@@ -91,12 +91,7 @@ body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: none;
-  /* A faint page-ruling texture under everything — paper, not plastic. */
-  background-image: linear-gradient(var(--line) 1px, transparent 1px);
-  background-size: 100% 44px;
-  background-attachment: fixed;
 }
-[data-theme="dark"] body { background-image: linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px); }
 
 button, .chip, .card, .tab { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
