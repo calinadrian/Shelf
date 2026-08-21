@@ -269,6 +269,7 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 .view-toggle { display: flex; flex: none; height: var(--control-height); padding: 3px; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .view-toggle-btn { appearance: none; height: 32px; min-width: 54px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .view-toggle-btn.active { background: var(--dark); color: var(--on-dark); }
+.backup-actions { display: flex; gap: 6px; margin-left: auto; }
 
 /* ============ Library grid ============ */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 24px 18px; }
@@ -377,6 +378,8 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 .chip:focus-visible, .btn:focus-visible, .tab:focus-visible, select:focus-visible { outline: 2px solid var(--dark); outline-offset: 2px; }
 
 @media (max-width: 720px) {
+  .backup-actions { width: 100%; margin-left: 0; }
+  .backup-actions .btn { flex: 1; }
   /* One compact strip instead of four big cards — the stats block shouldn't
      eat half the screen before the books. */
   .stats { grid-template-columns: repeat(4, 1fr); gap: 0; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; }
@@ -470,4 +473,3 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
   .card:hover .cover-wrap { transform: none; box-shadow: var(--shadow-sm); }
   .star-btn:hover { transform: none; }
 }
-

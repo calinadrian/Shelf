@@ -82,6 +82,7 @@ let calendarTarget = null;
 let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 const PROGRESS_KEY = 'shelf-progress';
 const STREAK_KEY = 'shelf-streak';
+const { localDateKey, normalizeBook, updateStreak, validateBackup } = window.ShelfCore;
 
 /* ---------------- Small helpers ---------------- */
 
@@ -130,34 +131,13 @@ function saveStreak(streak) {
 }
 
 function checkStreak() {
-  const streak = loadStreak();
-  const today = dateKey();
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  if (streak.lastDate === today) return streak; // already counted today
-  if (streak.lastDate === yesterday) {
-    streak.count += 1;
-    streak.lastDate = today;
-  } else if (streak.lastDate !== today) {
-    // If last date is more than yesterday, streak is broken
-    if (streak.lastDate && streak.lastDate !== yesterday) {
-      streak.count = 0;
-    }
-  }
+  const streak = updateStreak(loadStreak());
   saveStreak(streak);
   return streak;
 }
 
 function recordDailyRead() {
-  const streak = loadStreak();
-  const today = dateKey();
-  if (streak.lastDate === today) return streak.count; // already recorded
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  if (streak.lastDate === yesterday || streak.count === 0) {
-    streak.count += 1;
-  } else {
-    streak.count = 1;
-  }
-  streak.lastDate = today;
+  const streak = updateStreak(loadStreak(), new Date(), true);
   saveStreak(streak);
   return streak.count;
 }
@@ -222,7 +202,7 @@ function weekKey(date = new Date()) {
   return `${date.getFullYear()}-${Math.ceil((((date - first) / 86400000) + first.getDay() + 1) / 7)}`;
 }
 
-function dateKey(date = new Date()) { return date.toISOString().slice(0, 10); }
+function dateKey(date = new Date()) { return localDateKey(date); }
 function monthKey(date = new Date()) { return `${date.getFullYear()}-${date.getMonth() + 1}`; }
 function periodEnd(type, date = new Date()) {
   if (type === 'daily') return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime();
@@ -621,7 +601,7 @@ function renderLibrary() {
         </div>
         <p class="card-author">${esc(b.author || '')}</p>
         <div class="card-meta">
-          <div class="stars small">${b.rating ? starsMarkup(b.rating) : '<span class="muted">No rating</span>'}</div>
+          ${b.status && b.status !== 'want' ? `<div class="stars small">${b.rating ? starsMarkup(b.rating) : '<span class="muted">No rating</span>'}</div>` : ''}
           <span class="page-progress">${b.currentPage || 0}${b.pageCount ? ` / ${b.pageCount} pages` : ' pages'}</span>
         </div>
       </div>
@@ -813,7 +793,7 @@ async function saveFromModal() {
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
   const wasNew = !modalBook.id;
-  const book = { ...modalBook };
+  let book = { ...modalBook };
   book.id = modalBook.id || newId();
   book.status = $('#fStatus').value;
   book.rating = modalRating;
@@ -822,13 +802,10 @@ async function saveFromModal() {
   book.currentPage = Math.max(0, Number($('#fCurrentPage').value) || 0);
   const pageCount = Number($('#fPageCount').value);
   book.pageCount = pageCount > 0 ? pageCount : null;
-  // Clamp current page to total pages
-  if (book.pageCount && book.currentPage > book.pageCount) {
-    book.currentPage = book.pageCount;
-  }
   book.startDate = $('#fStart').value || null;
   book.finishDate = $('#fFinish').value || null;
   if (!book.addedAt) book.addedAt = new Date().toISOString();
+  book = normalizeBook(book);
 
   let storedBooks;
   try { storedBooks = await dbGetAll(); }
@@ -894,6 +871,46 @@ async function deleteFromModal() {
 async function reloadLibrary() {
   library = (await dbGetAll()).sort((a, b) => new Date(a.addedAt).getTime() - new Date(b.addedAt).getTime());
   refreshAll();
+}
+
+function backupPayload() {
+  return {
+    format: 'shelf-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    books: library,
+    progress: loadProgress(),
+    streak: loadStreak(),
+  };
+}
+
+function exportBackup() {
+  const blob = new Blob([JSON.stringify(backupPayload(), null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `shelf-backup-${dateKey()}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+  toast('Backup exported');
+}
+
+async function importBackup(file) {
+  const parsed = validateBackup(JSON.parse(await file.text()));
+  if (!window.confirm(`Replace your current library with ${parsed.books.length} book${parsed.books.length === 1 ? '' : 's'} from this backup?`)) return;
+  const db = await openDB();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    store.clear();
+    parsed.books.forEach((book) => store.put(book));
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Import was aborted'));
+  });
+  saveProgress(parsed.progress);
+  saveStreak(parsed.streak);
+  await reloadLibrary();
+  toast(`Imported ${parsed.books.length} book${parsed.books.length === 1 ? '' : 's'}`);
 }
 
 function refreshAll() {
@@ -1010,6 +1027,15 @@ function bindEvents() {
   $('#statusFilter').addEventListener('change', (e) => { statusFilter = e.target.value; renderLibrary(); });
   $('#librarySearch').addEventListener('input', (e) => { libraryQuery = e.target.value.trim(); renderLibrary(); });
   $('#sortBy').addEventListener('change', (e) => { sortBy = e.target.value; renderLibrary(); });
+  $('#exportBtn').addEventListener('click', exportBackup);
+  $('#importBtn').addEventListener('click', () => $('#importFile').click());
+  $('#importFile').addEventListener('change', async (e) => {
+    const [file] = e.target.files;
+    e.target.value = '';
+    if (!file) return;
+    try { await importBackup(file); }
+    catch (err) { console.error('Import failed', err); toast(err.message || 'Could not import backup'); }
+  });
 
   // Silently clamp page inputs to each other (no browser validation popup)
   $('#fCurrentPage').addEventListener('input', (e) => {
@@ -1135,7 +1161,5 @@ function bindEvents() {
   }
   refreshAll();
 })();
-
-
 
 

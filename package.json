@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "description": "Shelf — a mobile book tracker (Capacitor wrapper around the web app)",
   "scripts": {
+    "test": "node --test",
+    "check": "node --check app.js && node --check shelf-core.js && node --test && node sync-web.mjs --check",
     "sync:web": "node sync-web.mjs",
     "cap:assets": "node sync-web.mjs && cap assets generate",
     "cap:sync": "node sync-web.mjs && cap sync",

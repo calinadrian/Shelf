@@ -89,6 +89,11 @@
           <button type="button" class="view-toggle-btn active" data-view="grid" aria-pressed="true">Cards</button>
           <button type="button" class="view-toggle-btn" data-view="list" aria-pressed="false">List</button>
         </div>
+        <div class="backup-actions" role="group" aria-label="Library backup">
+          <button type="button" class="btn" id="exportBtn">Export</button>
+          <button type="button" class="btn" id="importBtn">Import</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden />
+        </div>
       </div>
 
       <div id="libraryGrid" class="grid"></div>
@@ -215,6 +220,7 @@
 
   <div id="toast" class="toast" role="status"></div>
 
+  <script src="shelf-core.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
