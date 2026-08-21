@@ -1775,6 +1775,7 @@ async function refreshKokoroStatus() {
     status.textContent = model.installed ? 'Kokoro is installed and runs privately on this phone.' : 'Kokoro needs a one-time ~99 MB download and temporary room to unpack.';
     download.classList.toggle('hidden', model.installed);
     download.disabled = Boolean(model.downloading);
+    if (model.installed && native.prepare) native.prepare().catch(() => {});
     return Boolean(model.installed);
   } catch {
     status.textContent = 'Could not check the Kokoro voice model.';
@@ -1884,8 +1885,6 @@ async function startReadAloud() {
   const text = await readerTextAtPosition();
   if (activeReader !== reader || reader.readAloud !== state) return;
   if (!text) { stopReadAloud(); toast('There is no readable text on this page'); return; }
-  state.status = 'speaking';
-  updateReadAloudUi();
   try {
     const native = nativeSpeechPlugin();
     if (native) {
@@ -1900,6 +1899,8 @@ async function startReadAloud() {
       await native.speak({ text, segments: kokoroVoiceSegments(text, reader.settings), rate: Number(reader.settings.listenRate) || 1 });
     }
     else if ('speechSynthesis' in window) {
+      state.status = 'speaking';
+      updateReadAloudUi();
       state.chunks = speechChunks(text);
       speakBrowserChunk(state);
     } else throw new Error('Speech is unavailable');
@@ -2745,7 +2746,7 @@ function bindEvents() {
       else if (state === 'error') {
         stopReadAloud();
         toast('Read aloud stopped because speech failed');
-      } else if (state === 'paused' || state === 'speaking') {
+      } else if (state === 'loading' || state === 'paused' || state === 'speaking') {
         readAloud.status = state;
         updateReadAloudUi();
       }
