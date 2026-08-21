@@ -36,11 +36,30 @@ an internet connection.
 ## Android updates from GitHub
 
 The Android app checks the latest release of `calinadrian/Shelf` when the update
-button in the header is pressed. Publish releases with a semantic tag such as
-`v1.1.0` and attach one `.apk` asset. Increase both `versionCode` and
-`versionName` in `android/app/build.gradle` for every release.
+button in the header is pressed. When a newer version is found, it downloads the
+APK and opens Android's installer. Updates are accepted only from GitHub release
+assets for that repository.
 
-Every release APK must be signed with the same production signing key. Android
-will reject an update signed with another key. On Android 8 and newer, the user
-must also allow Shelf to install unknown apps and approve the Android installer;
-the app cannot silently bypass those system confirmations.
+### Publish an update
+
+1. In `android/app/build.gradle`, increase both version values. `versionCode`
+   must be a larger integer every time; `versionName` is the human-readable
+   release version. For example, the next release after `1.1.0` could use
+   `versionCode 3` and `versionName "1.2.0"`.
+2. Run `npm run cap:sync` to copy the current web app into the Android project.
+3. Open the Android project with `npm run cap:android`.
+4. In Android Studio, choose **Build → Generate Signed Bundle / APK → APK**,
+   select the `release` variant, and sign it with the same production keystore
+   used for the version already installed on the phone. Save that keystore
+   safely—an APK signed with a different key cannot update the installed app.
+5. Create a GitHub release in `calinadrian/Shelf` with a tag matching the app
+   version, such as `v1.2.0`, and attach exactly one release APK. The updater
+   selects the `.apk` asset from GitHub's latest release.
+6. On the phone, open Shelf and tap the update button in the header. Approve the
+   download, then approve Android's installer. Android 8+ may first ask you to
+   allow Shelf to install unknown apps; enable that permission for Shelf and tap
+   the update button again.
+
+The GitHub release tag must be newer than the installed `versionName`. For
+example, an app at `1.1.0` will install a release tagged `v1.2.0`, but will not
+offer `v1.1.0` again. Test each release on a device before publishing it widely.

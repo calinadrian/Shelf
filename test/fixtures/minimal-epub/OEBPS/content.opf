@@ -2,10 +2,10 @@
 <package xmlns="http://www.idpf.org/2007/opf" unique-identifier="book-id" version="3.0">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">shelf-test-book</dc:identifier>
-    <dc:title>Shelf Reader Test</dc:title>
+    <dc:title>Pride and Prejudice</dc:title>
     <dc:language>en</dc:language>
-    <dc:creator>Test Author</dc:creator>
+    <dc:description>&lt;div&gt;&lt;p align=&quot;justify&quot;&gt;A locally embedded paragraph.&lt;/p&gt;&lt;p&gt;It must become plain text.&lt;/p&gt;&lt;/div&gt;</dc:description>
   </metadata>
-  <manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/><item id="first-image" href="first-image.svg" media-type="image/svg+xml"/></manifest>
   <spine><itemref idref="chapter"/></spine>
 </package>

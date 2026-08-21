@@ -473,6 +473,20 @@ async function cacheCover(book) {
   return book;
 }
 
+function cacheCoverInBackground(book) {
+  if (!book.coverUrl || book.coverData) return;
+  cacheCover(book).then(async () => {
+    if (!book.coverData) return;
+    await dbPut(book);
+    const current = library.find((item) => item.id === book.id);
+    if (current) {
+      current.coverData = book.coverData;
+      current.coverUrl = book.coverUrl;
+      renderLibrary();
+    }
+  }).catch((error) => console.info('Cover caching unavailable', error));
+}
+
 function starsMarkup(rating) {
   let out = '';
   for (let i = 1; i <= 5; i++) out += `<span class="star${i <= rating ? ' on' : ''}">★</span>`;
@@ -606,7 +620,8 @@ function visibleBooks() {
     const query = libraryQuery.toLowerCase();
     books = books.filter((b) => `${b.title} ${b.author || ''}`.toLowerCase().includes(query));
   }
-  if (statusFilter) books = books.filter((b) => b.status === statusFilter);
+  if (statusFilter === 'imported') books = books.filter((b) => Boolean(b.fileData));
+  else if (statusFilter) books = books.filter((b) => b.status === statusFilter);
   const sorters = {
     addedDesc: (a, b) => new Date(b.addedAt).getTime() - new Date(a.addedAt).getTime(),
     ratingDesc: (a, b) => (b.rating || 0) - (a.rating || 0) || a.title.localeCompare(b.title),
@@ -649,7 +664,7 @@ function renderLibrary() {
         <div class="card-meta">
           ${b.status && b.status !== 'want' ? `<div class="stars small">${b.rating ? starsMarkup(b.rating) : '<span class="muted">No rating</span>'}</div>` : ''}
           <span class="page-progress">${b.currentPage || 0}${b.pageCount ? ` / ${b.pageCount} pages` : ' pages'}</span>
-          ${b.fileData ? `<button type="button" class="card-read" data-read-id="${esc(b.id)}">Read</button>` : ''}
+          ${b.fileData ? `<button type="button" class="card-read" data-read-id="${esc(b.id)}" aria-label="Read ${esc(b.title)}" title="Open reader">Imported</button>` : ''}
         </div>
       </div>
     </article>`).join('');
@@ -733,10 +748,21 @@ function bookFormat(file) {
   return extension;
 }
 
+function configurePdfJs() {
+  const pdfjs = window.ShelfReaderLibs.pdfjs;
+  // The bundled main-thread handler is used for file:// compatibility. Keep an
+  // absolute source as a secondary path for normal hosted/Capacitor builds.
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdf.worker.mjs', document.baseURI).href;
+  return pdfjs;
+}
+
 async function dataUrlFromObjectUrl(url) {
   if (!url) return null;
   try {
-    const blob = await fetch(url).then((response) => response.blob());
+    const blob = await fetch(url).then((response) => {
+      if (!response.ok) throw new Error(`Image request returned ${response.status}`);
+      return response.blob();
+    });
     return await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
@@ -746,13 +772,200 @@ async function dataUrlFromObjectUrl(url) {
   } catch { return null; }
 }
 
+async function coverFromFirstBookSection(parsed) {
+  try {
+    const spine = parsed.getSpine().slice(0, 3);
+    for (const section of spine) {
+      const chapter = await parsed.loadChapter(section.id);
+      if (!chapter?.html) continue;
+      const doc = new DOMParser().parseFromString(chapter.html, 'text/html');
+      const image = doc.querySelector('img[src], svg image, object[data]');
+      const source = image?.getAttribute('src') || image?.getAttribute('href') || image?.getAttribute('xlink:href') || image?.getAttribute('data');
+      const cover = await dataUrlFromObjectUrl(source);
+      if (cover?.startsWith('data:image/')) return cover;
+    }
+  } catch (error) {
+    console.info('Could not extract a cover from the first book section', error);
+  }
+  return null;
+}
+
+async function coverFromStoredEbook(book) {
+  if (!['epub', 'mobi'].includes(book.fileFormat) || !book.fileData) return null;
+  const init = book.fileFormat === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
+  const file = new File([book.fileData], book.fileName || `book.${book.fileFormat}`, { type: book.fileData.type });
+  let parsed = null;
+  try {
+    parsed = await init(file);
+    return await coverFromFirstBookSection(parsed);
+  } catch (error) {
+    console.info('Stored ebook cover fallback unavailable', error);
+    return null;
+  } finally { parsed?.destroy(); }
+}
+
+function plainTextDescription(value) {
+  const source = typeof value === 'object' && value ? value.value : value;
+  if (!source) return '';
+  const doc = new DOMParser().parseFromString(String(source).replace(/\\(?=<\/?[a-z])/gi, ''), 'text/html');
+  doc.querySelectorAll('script,style,noscript').forEach((node) => node.remove());
+  const blocks = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DIV', 'FIGCAPTION', 'FOOTER', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'LI', 'MAIN', 'NAV', 'P', 'SECTION', 'TR']);
+  const read = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || '';
+    if (node.nodeName === 'BR') return '\n';
+    const text = [...node.childNodes].map(read).join('');
+    return blocks.has(node.nodeName) ? `${text}\n` : text;
+  };
+  return read(doc.body).replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function isbnFrom(...values) {
+  for (const value of values.flat(Infinity)) {
+    const raw = typeof value === 'object' && value ? (value.identifier || value.id || '') : value;
+    const match = String(raw || '').toUpperCase().match(/(?:97[89][\d -]{10,16}\d|[\d -]{9,14}[\dX])/);
+    if (!match) continue;
+    const isbn = match[0].replace(/[^\dX]/g, '');
+    if (isbn.length === 10 || isbn.length === 13) return isbn;
+  }
+  return '';
+}
+
+async function fetchJsonWithTimeout(url, timeout = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Metadata request returned ${response.status}`);
+    return await response.json();
+  } finally { clearTimeout(timer); }
+}
+
+function metadataSearchKey(value) {
+  return String(value || '').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+async function enrichFromGoogleBooks(details, title) {
+  try {
+    const query = details.isbn
+      ? `isbn:${details.isbn}`
+      : `intitle:"${title}"${details.author ? ` inauthor:"${details.author}"` : ''}`;
+    const params = new URLSearchParams({ q: query, maxResults: '10', printType: 'books', projection: 'lite' });
+    const result = await fetchJsonWithTimeout(`https://www.googleapis.com/books/v1/volumes?${params}`);
+    const items = Array.isArray(result.items) ? result.items : [];
+    const titleKey = metadataSearchKey(title);
+    const authorKey = metadataSearchKey(details.author);
+    const usable = items.filter((item) => item.volumeInfo?.imageLinks);
+    const match = (details.isbn ? usable[0] : usable.find((item) => {
+      const info = item.volumeInfo || {};
+      const sameTitle = metadataSearchKey(info.title) === titleKey;
+      const sameAuthor = !authorKey || (info.authors || []).some((author) => {
+        const candidate = metadataSearchKey(author);
+        return candidate === authorKey || candidate.includes(authorKey) || authorKey.includes(candidate);
+      });
+      return sameTitle && sameAuthor;
+    })) || usable.find((item) => metadataSearchKey(item.volumeInfo?.title) === titleKey);
+    if (!match) return details;
+
+    const info = match.volumeInfo || {};
+    const images = info.imageLinks || {};
+    const image = images.extraLarge || images.large || images.medium || images.thumbnail || images.smallThumbnail;
+    if (image) {
+      details.coverUrl = String(image).replace(/^http:/, 'https:');
+      details.coverProvider = 'google-books';
+    }
+    details.author ||= (info.authors || []).join(', ');
+    details.isbn ||= isbnFrom((info.industryIdentifiers || []).map((item) => item.identifier));
+    details.description ||= plainTextDescription(info.description);
+  } catch (error) {
+    console.info('Google Books cover lookup unavailable', error);
+  }
+  return details;
+}
+
+async function renderPdfFirstPageCover(pdf) {
+  try {
+    const page = await pdf.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, 900 / base.width);
+    const viewport = page.getViewport({ scale: Math.max(1, scale) });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const context = canvas.getContext('2d', { alpha: false });
+    await page.render({ canvasContext: context, viewport, background: '#ffffff' }).promise;
+    return canvas.toDataURL('image/jpeg', .88);
+  } catch (error) {
+    console.info('Could not create a cover from the first PDF page', error);
+    return null;
+  }
+}
+
+async function coverFromStoredPdf(book) {
+  if (book.fileFormat !== 'pdf' || !book.fileData) return null;
+  const pdfjs = configurePdfJs();
+  let pdf = null;
+  try {
+    pdf = await pdfjs.getDocument({ data: new Uint8Array(await book.fileData.arrayBuffer()), verbosity: 0 }).promise;
+    return await renderPdfFirstPageCover(pdf);
+  } catch (error) {
+    console.info('Stored PDF cover fallback unavailable', error);
+    return null;
+  } finally { await pdf?.destroy(); }
+}
+
+async function enrichImportedMetadata(details, fallbackTitle) {
+  const title = details.title || fallbackTitle;
+  if (!title || (details.coverData && details.author && details.isbn && details.description)) return details;
+  try {
+    const params = new URLSearchParams({ title, limit: '5', fields: 'key,title,author_name,isbn,cover_i,first_sentence' });
+    if (details.author) params.set('author', details.author);
+    const result = await fetchJsonWithTimeout(`https://openlibrary.org/search.json?${params}`);
+    const titleKey = metadataSearchKey(title);
+    const authorKey = metadataSearchKey(details.author);
+    const docs = Array.isArray(result.docs) ? result.docs : [];
+    const match = docs.find((doc) => {
+      const sameTitle = metadataSearchKey(doc.title) === titleKey;
+      const sameAuthor = !authorKey || (doc.author_name || []).some((author) => {
+        const candidate = metadataSearchKey(author);
+        return candidate === authorKey || candidate.includes(authorKey) || authorKey.includes(candidate);
+      });
+      return sameTitle && sameAuthor;
+    }) || docs.find((doc) => metadataSearchKey(doc.title) === titleKey) || docs[0];
+    if (!match) throw new Error('No Open Library match');
+
+    details.author ||= (match.author_name || []).join(', ');
+    details.isbn ||= isbnFrom(match.isbn || []);
+    if (!details.coverData && match.cover_i) {
+      details.coverUrl = coverUrlFor(match.cover_i, 'L');
+      details.coverProvider = 'open-library';
+    }
+    if (!details.description) {
+      const firstSentence = Array.isArray(match.first_sentence) ? match.first_sentence[0] : match.first_sentence;
+      details.description = plainTextDescription(firstSentence);
+      if (match.key) {
+        const workPath = String(match.key).startsWith('/') ? match.key : `/works/${match.key}`;
+        const work = await fetchJsonWithTimeout(`https://openlibrary.org${workPath}.json`);
+        details.description = plainTextDescription(work.description) || details.description;
+      }
+    }
+  } catch (error) {
+    console.info('Open Library metadata lookup unavailable', error);
+  }
+  if (!details.coverData && !details.coverUrl) await enrichFromGoogleBooks(details, title);
+  return details;
+}
+
 async function inspectLocalBook(file, format) {
   if (format === 'pdf') {
-    const pdfjs = window.ShelfReaderLibs.pdfjs;
-    pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.mjs';
-    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const pdfjs = configurePdfJs();
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), verbosity: 0 }).promise;
     const metadata = await pdf.getMetadata().catch(() => ({ info: {} }));
-    const result = { title: metadata.info?.Title, author: metadata.info?.Author, pageCount: pdf.numPages };
+    const result = {
+      title: metadata.info?.Title,
+      author: metadata.info?.Author,
+      pageCount: pdf.numPages,
+      pdfFirstPageCover: await renderPdfFirstPageCover(pdf),
+    };
     await pdf.destroy();
     return result;
   }
@@ -763,12 +976,15 @@ async function inspectLocalBook(file, format) {
   const author = Array.isArray(creators)
     ? creators.map((item) => typeof item === 'string' ? item : item.contributor).filter(Boolean).join(', ')
     : String(creators || '');
-  const coverUrl = parsed.getCoverImage?.();
+  let embeddedCoverUrl = '';
+  try { embeddedCoverUrl = parsed.getCoverImage?.() || ''; } catch { /* cover is optional */ }
+  const embeddedCover = await dataUrlFromObjectUrl(embeddedCoverUrl);
   const result = {
     title: metadata.title,
     author,
-    description: metadata.description || '',
-    coverData: await dataUrlFromObjectUrl(coverUrl),
+    isbn: isbnFrom(metadata.isbn, metadata.identifier, metadata.packageIdentifier),
+    description: plainTextDescription(metadata.description),
+    coverData: embeddedCover || await coverFromFirstBookSection(parsed),
     readerSections: parsed.getSpine().length,
   };
   parsed.destroy();
@@ -777,22 +993,78 @@ async function inspectLocalBook(file, format) {
 
 async function importLocalBook(file) {
   const format = bookFormat(file);
-  const details = await inspectLocalBook(file, format);
   const fallbackTitle = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+  const details = await enrichImportedMetadata(await inspectLocalBook(file, format), fallbackTitle);
+  if (!details.coverData && !details.coverUrl && details.pdfFirstPageCover) {
+    details.coverData = details.pdfFirstPageCover;
+    details.coverProvider = 'pdf-first-page';
+  }
   const book = normalizeBook({
     id: newId(), title: details.title || fallbackTitle || 'Untitled', author: details.author || '',
-    description: details.description || '', coverData: details.coverData || null,
+    description: details.description || '', coverData: details.coverData || null, coverUrl: details.coverUrl || null,
+    coverProvider: details.coverProvider || null,
+    isbn: details.isbn || null,
     pageCount: details.pageCount || null, currentPage: 0, status: 'reading', rating: 0, notes: '', tags: [],
     addedAt: new Date().toISOString(), startDate: localDateKey(), finishDate: null,
     fileName: file.name, fileFormat: format, fileData: file.slice(0, file.size, file.type),
     readerPosition: 0, readerSections: details.readerSections || details.pageCount || 1,
+    metadataLookupAt: Date.now(), metadataLookupVersion: 4,
   });
   await dbPut(book);
   createBookQuest(book);
   await reloadLibrary();
+  cacheCoverInBackground(book);
   switchTab('library');
   toast(`Imported “${book.title}”`);
   await openReader(book);
+}
+
+async function repairImportedMetadata() {
+  const retryAfter = 6 * 60 * 60 * 1000;
+  const candidates = library.filter((book) => {
+    if (!book.fileData) return false;
+    const descriptionNeedsCleaning = /<\/?[a-z][\s\S]*>/i.test(book.description || '') || /&#(?:x[\da-f]+|\d+);/i.test(book.description || '');
+    const questionableIsbnCover = !book.coverData && /covers\.openlibrary\.org\/b\/isbn\//i.test(book.coverUrl || '');
+    const missingMetadata = (!book.coverData && !book.coverUrl) || questionableIsbnCover || !book.author || !book.isbn || !book.description;
+    const lookupIsStale = book.metadataLookupVersion !== 4 || Date.now() - (book.metadataLookupAt || 0) >= retryAfter;
+    return descriptionNeedsCleaning || (missingMetadata && lookupIsStale);
+  });
+  if (!candidates.length) return;
+
+  let visibleChange = false;
+  for (const book of candidates) {
+    const before = [book.author, book.isbn, book.description, book.coverData, book.coverUrl].join('|');
+    const questionableIsbnCover = !book.coverData && /covers\.openlibrary\.org\/b\/isbn\//i.test(book.coverUrl || '');
+    const localSectionCover = !book.coverData && ['epub', 'mobi'].includes(book.fileFormat)
+      ? await coverFromStoredEbook(book)
+      : null;
+    const details = await enrichImportedMetadata({
+      title: book.title,
+      author: book.author || '',
+      isbn: book.isbn || '',
+      description: plainTextDescription(book.description),
+      coverData: localSectionCover || book.coverData || null,
+      coverUrl: questionableIsbnCover ? null : (book.coverUrl || null),
+      coverProvider: questionableIsbnCover ? null : (book.coverProvider || null),
+    }, book.title);
+    book.author = details.author || book.author || '';
+    book.isbn = details.isbn || book.isbn || null;
+    book.description = plainTextDescription(details.description || book.description);
+    book.coverData = details.coverData || book.coverData || null;
+    book.coverUrl = details.coverUrl || (questionableIsbnCover ? null : book.coverUrl) || null;
+    book.coverProvider = details.coverProvider || (questionableIsbnCover ? null : book.coverProvider) || null;
+    if (localSectionCover) book.coverProvider = 'embedded-first-section';
+    if (!book.coverData && !book.coverUrl && book.fileFormat === 'pdf') {
+      book.coverData = await coverFromStoredPdf(book);
+      if (book.coverData) book.coverProvider = 'pdf-first-page';
+    }
+    book.metadataLookupAt = Date.now();
+    book.metadataLookupVersion = 4;
+    await dbPut(book);
+    cacheCoverInBackground(book);
+    visibleChange ||= before !== [book.author, book.isbn, book.description, book.coverData, book.coverUrl].join('|');
+  }
+  if (visibleChange) await reloadLibrary();
 }
 
 function readerDocument(html, css, dark) {
@@ -832,6 +1104,42 @@ function bindReflowableReaderGestures() {
   doc.addEventListener('click', () => setReaderChrome(!activeReader?.chromeHidden));
 }
 
+async function renderPdfPage() {
+  const reader = activeReader;
+  if (!reader?.pdf) return;
+  const renderId = (reader.pdfRenderId || 0) + 1;
+  reader.pdfRenderId = renderId;
+  reader.pdfRenderTask?.cancel();
+
+  const page = await reader.pdf.getPage(reader.position + 1);
+  if (activeReader !== reader || reader.pdfRenderId !== renderId) return;
+  const canvas = $('#readerPdf');
+  const base = page.getViewport({ scale: 1 });
+  const availableWidth = Math.max(280, $('#readerStage').clientWidth - 24);
+  const displayScale = Math.max(.5, Math.min(2, availableWidth / base.width));
+  const viewport = page.getViewport({ scale: displayScale });
+
+  // Render physical device pixels into the backing canvas while preserving its
+  // CSS size. This is the PDF.js high-DPI pattern and prevents browser upscaling.
+  // Supersample at least 2× even on desktop DPR-1 displays; high-density
+  // phones can use up to 3×. PDF vectors and text therefore remain crisp when
+  // the browser composites or slightly zooms the page.
+  const outputScale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+  canvas.width = Math.ceil(viewport.width * outputScale);
+  canvas.height = Math.ceil(viewport.height * outputScale);
+  canvas.style.width = `${Math.round(viewport.width)}px`;
+  canvas.style.height = `${Math.round(viewport.height)}px`;
+  const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
+  const context = canvas.getContext('2d', { alpha: false });
+  reader.pdfRenderTask = page.render({ canvasContext: context, transform, viewport, background: '#ffffff' });
+  try { await reader.pdfRenderTask.promise; }
+  catch (error) {
+    if (error?.name !== 'RenderingCancelledException') throw error;
+    return;
+  }
+  if (activeReader === reader && reader.pdfRenderId === renderId) canvas.classList.remove('hidden');
+}
+
 async function renderReaderPosition(position) {
   if (!activeReader) return;
   const { book, parser, pdf } = activeReader;
@@ -844,14 +1152,7 @@ async function renderReaderPosition(position) {
   $('#readerPage').classList.add('hidden');
   $('#readerPdf').classList.add('hidden');
   if (pdf) {
-    const page = await pdf.getPage(activeReader.position + 1);
-    const canvas = $('#readerPdf');
-    const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, ($('#readerStage').clientWidth - 24) / base.width);
-    const viewport = page.getViewport({ scale: Math.max(.5, scale) });
-    canvas.width = viewport.width; canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    canvas.classList.remove('hidden');
+    await renderPdfPage();
   } else {
     const spine = parser.getSpine();
     const chapter = await parser.loadChapter(spine[activeReader.position].id);
@@ -875,9 +1176,8 @@ async function openReader(book) {
   $('#readerTitle').textContent = book.title; $('#readerLoading').classList.remove('hidden');
   try {
     if (book.fileFormat === 'pdf') {
-      const pdfjs = window.ShelfReaderLibs.pdfjs;
-      pdfjs.GlobalWorkerOptions.workerSrc = 'pdf.worker.mjs';
-      const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+      const pdfjs = configurePdfJs();
+      const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), verbosity: 0 }).promise;
       activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
     } else {
       const init = book.fileFormat === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
@@ -892,6 +1192,7 @@ async function openReader(book) {
 
 function closeReader() {
   if (!activeReader && $('#reader').classList.contains('hidden')) return;
+  activeReader?.pdfRenderTask?.cancel();
   activeReader?.parser?.destroy(); activeReader?.pdf?.destroy(); activeReader = null;
   $('#reader').classList.add('hidden');
   $('#reader').classList.remove('reader-chrome-hidden');
@@ -1378,7 +1679,15 @@ function bindEvents() {
     }
   });
 
-  window.addEventListener('resize', positionCalendar);
+  let readerResizeTimer = null;
+  window.addEventListener('resize', () => {
+    positionCalendar();
+    if (!activeReader?.pdf) return;
+    clearTimeout(readerResizeTimer);
+    readerResizeTimer = setTimeout(() => renderPdfPage().catch((error) => {
+      if (error?.name !== 'RenderingCancelledException') console.error('PDF resize render failed', error);
+    }), 140);
+  });
 
   // Star rating widget. Click sets a permanent rating; hovering only previews.
   const stars = $('#ratingInput');
@@ -1422,4 +1731,5 @@ function bindEvents() {
     toast('Could not open local storage');
   }
   refreshAll();
+  repairImportedMetadata().catch((error) => console.info('Imported metadata repair unavailable', error));
 })();
