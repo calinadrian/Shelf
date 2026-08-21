@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shelf QA — badges & mobile stats</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { padding-bottom: 40px; }
+    .qa-section { margin-top: 28px; }
+    .qa-h { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+    #themeBtn { position: fixed; top: 70px; right: 20px; z-index: 99; }
+  </style>
+  <script>
+    // ?theme=light|dark to force a theme for QA screenshots.
+    (function () {
+      const t = new URLSearchParams(location.search).get('theme');
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <span class="logo">Shelf<span class="logo-dot">.</span></span>
+      <nav class="tabs"><button type="button" class="tab active">Search</button><button type="button" class="tab">Library<span class="count-pill">12</span></button></nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Mobile stats strip (force the ≤720px rules via a wrapper width) -->
+    <section class="qa-section" id="statsBox">
+      <p class="qa-h">Stats — mobile layout (box is 390px wide)</p>
+      <div style="width: 350px;">
+        <div class="stats">
+          <div class="stat"><span class="stat-num" id="s1">24</span><span class="stat-label">Books read</span></div>
+          <div class="stat"><span class="stat-num" id="s2">9,830</span><span class="stat-label">Pages read</span></div>
+          <div class="stat"><span class="stat-num" id="s3">4.1</span><span class="stat-label">Average rating</span></div>
+          <div class="stat"><span class="stat-num" id="s4">7</span><span class="stat-label">Read this year</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Badge legibility over real covers, all four statuses -->
+    <section class="qa-section">
+      <p class="qa-h">Badges — dark theme (current)</p>
+      <div class="grid" id="gridDark"></div>
+    </section>
+  </main>
+
+  <button type="button" class="btn btn-dark" id="themeBtn">Toggle theme</button>
+
+  <script>
+    const covers = [
+      { url: 'https://covers.openlibrary.org/b/id/11481354-M.jpg', title: 'Dune', author: 'Frank Herbert' },
+      { url: 'https://covers.openlibrary.org/b/id/9267242-M.jpg', title: 'Nineteen Eighty-Four', author: 'George Orwell' },
+      { url: 'https://covers.openlibrary.org/b/id/14348537-M.jpg', title: 'Pride and Prejudice', author: 'Jane Austen' },
+    ];
+    const statuses = ['want', 'reading', 'read', 'dnf'];
+    const labels = { want: 'Want to Read', reading: 'Currently Reading', read: 'Read', dnf: 'DNF' };
+
+    function card(c, s) {
+      return `<article class="card">
+        <div class="cover-wrap">
+          <img src="${c.url}" alt="" />
+          <span class="badge badge-${s}">${labels[s]}</span>
+        </div>
+        <h3 class="card-title">${c.title}</h3>
+        <p class="card-author">${c.author}</p>
+      </article>`;
+    }
+
+    function render() {
+      const grid = document.getElementById('gridDark');
+      let html = '';
+      for (const s of statuses) html += card(covers[0], s);   // Dune: all four
+      html += card(covers[1], 'reading') + card(covers[2], 'read');
+      grid.innerHTML = html;
+    }
+
+    document.getElementById('themeBtn').addEventListener('click', () => {
+      const h = document.documentElement;
+      h.dataset.theme = h.dataset.theme === 'dark' ? 'light' : 'dark';
+    });
+
+    render();
+  </script>
+</body>
+</html>

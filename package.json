@@ -1,0 +1,25 @@
+{
+  "name": "shelf",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Shelf — a mobile book tracker (Capacitor wrapper around the web app)",
+  "scripts": {
+    "sync:web": "node sync-web.mjs",
+    "cap:assets": "node sync-web.mjs && cap assets generate",
+    "cap:sync": "node sync-web.mjs && cap sync",
+    "cap:android": "cap open android",
+    "cap:ios": "cap open ios",
+    "cap:run:android": "node sync-web.mjs && cap run android",
+    "cap:sync:apk": "node sync-web.mjs && cap sync"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/ios": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "appId": "com.hasyl.shelf",
+  "appName": "Shelf",
+  "webDir": "www",
+  "backgroundColor": "#f6f5f1",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 800,
+      "backgroundColor": "#f6f5f1"
+    }
+  }
+}

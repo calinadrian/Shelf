@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Shelf · Book Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#161512" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Shelf" />
+  <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Apply the saved (or OS) theme before first paint to avoid a flash.
+    (function () {
+      try {
+        var saved = localStorage.getItem('shelf-theme');
+        var theme = saved === 'dark' || saved === 'light'
+          ? saved
+          : (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    })();
+  </script>
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <span class="logo">Shelf<span class="logo-dot">.</span></span>
+      <nav class="tabs" aria-label="Main views">
+        <button type="button" class="tab active" data-tab="search">Search</button>
+        <button type="button" class="tab" data-tab="library">Library<span class="count-pill" id="libCount"></span></button>
+        <button type="button" class="tab" data-tab="quests">Quests</button>
+      </nav>
+      <button type="button" class="theme-toggle" id="themeToggle" aria-label="Switch to dark mode" title="Toggle dark mode">
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ============ Search view ============ -->
+    <section id="view-search" class="view active" aria-label="Search books">
+      <form id="searchForm" autocomplete="off">
+        <input type="search" id="searchInput" enterkeyhint="search" placeholder="Search by title or author…" aria-label="Search by title or author" />
+        <button type="submit" class="btn btn-dark">Search</button>
+      </form>
+      <p id="searchStatus" class="status-line"></p>
+      <ol id="searchResults" class="results" hidden></ol>
+    </section>
+
+    <!-- ============ Library view ============ -->
+    <section id="view-library" class="view" aria-label="My library">
+      <div class="stats">
+        <div class="stat"><span class="stat-num" id="statRead">0</span><span class="stat-label">Books read</span></div>
+        <div class="stat"><span class="stat-num" id="statPages">0</span><span class="stat-label">Pages read</span></div>
+        <div class="stat"><span class="stat-num" id="statAvg">–</span><span class="stat-label">Average rating</span></div>
+        <div class="stat"><span class="stat-num" id="statYear">0</span><span class="stat-label">Read this year</span></div>
+      </div>
+
+      <div class="toolbar">
+        <input type="search" id="librarySearch" class="library-search" placeholder="Search your library" aria-label="Search your library" />
+        <select id="statusFilter" aria-label="Filter by status">
+          <option value="">All</option>
+          <option value="want">Want to Read</option>
+          <option value="reading">Currently Reading</option>
+          <option value="read">Read</option>
+          <option value="dnf">DNF</option>
+        </select>
+        <select id="sortBy" aria-label="Sort library">
+          <option value="addedDesc">Newest first</option>
+          <option value="ratingDesc">Highest rated</option>
+          <option value="titleAsc">Title A–Z</option>
+        </select>
+        <div class="view-toggle" role="group" aria-label="Library view">
+          <button type="button" class="view-toggle-btn active" data-view="grid" aria-pressed="true">Cards</button>
+          <button type="button" class="view-toggle-btn" data-view="list" aria-pressed="false">List</button>
+        </div>
+      </div>
+
+      <div id="libraryGrid" class="grid"></div>
+      <p id="emptyLibrary" class="status-line hidden"></p>
+    </section>
+
+    <section id="view-quests" class="view" aria-label="Quests">
+
+      <!-- Level header -->
+      <section class="level-header" aria-label="Shelf progress">
+        <div class="level-badge">
+          <span class="level-icon">🏆</span>
+          <div>
+            <span class="eyebrow">Shelf level</span>
+            <strong id="levelNumber">1</strong>
+          </div>
+        </div>
+        <div class="level-xp">
+          <div class="level-xp-row">
+            <span id="xpNumber">0 XP</span>
+            <span class="muted small" id="xpNext">100 XP to level 2</span>
+          </div>
+          <div class="xp-track"><span id="xpBar"></span></div>
+        </div>
+      </section>
+
+      <!-- Streak -->
+      <section class="streak-bar" aria-label="Reading streak">
+        <span class="streak-fire">🔥</span>
+        <span class="streak-count" id="streakCount">0</span>
+        <span class="streak-label">day streak</span>
+        <span class="streak-hint" id="streakHint">Read today to keep it going!</span>
+      </section>
+
+      <!-- Quest tabs -->
+      <div class="quest-tabs" role="tablist" aria-label="Quest views">
+        <button type="button" class="quest-tab active" data-questtab="active" role="tab" aria-selected="true">Active <span class="quest-tab-count" id="activeCount">0</span></button>
+        <button type="button" class="quest-tab" data-questtab="history" role="tab" aria-selected="false">History <span class="quest-tab-count" id="historyCount">0</span></button>
+      </div>
+
+      <!-- Quest list -->
+      <div id="questList" class="quest-list"></div>
+
+      <!-- Controls -->
+      <div class="quest-controls">
+        <button type="button" class="btn" id="abandonQuestsBtn">Abandon all</button>
+        <button type="button" class="btn btn-danger" id="resetProgressBtn">Reset all</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============ Add / edit modal ============ -->
+  <div class="backdrop hidden" id="modalBackdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <img id="mCover" alt="" />
+        <div>
+          <h2 id="modalTitle"></h2>
+          <p id="modalAuthor" class="muted"></p>
+          <p id="modalMeta" class="muted small"></p>
+          <p id="modalDescription" class="modal-description muted"></p>
+        </div>
+      </div>
+
+      <form id="bookForm">
+        <label>Status
+          <select id="fStatus">
+            <option value="want">Want to Read</option>
+            <option value="reading">Currently Reading</option>
+            <option value="read">Read</option>
+            <option value="dnf">DNF (Did Not Finish)</option>
+          </select>
+        </label>
+
+        <label>Your rating
+          <span class="stars-input" id="ratingInput"></span>
+        </label>
+
+        <label>Start date
+          <span class="date-control">
+            <input type="text" class="date-display" id="fStartDisplay" placeholder="Select date" readonly aria-label="Start date" />
+            <input type="date" id="fStart" class="date-value" tabindex="-1" aria-hidden="true" />
+            <svg class="date-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M16 2.5v4M8 2.5v4M3 9.5h18"/></svg>
+          </span>
+        </label>
+        <label>Finish date
+          <span class="date-control">
+            <input type="text" class="date-display" id="fFinishDisplay" placeholder="Select date" readonly aria-label="Finish date" />
+            <input type="date" id="fFinish" class="date-value" tabindex="-1" aria-hidden="true" />
+            <svg class="date-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M16 2.5v4M8 2.5v4M3 9.5h18"/></svg>
+          </span>
+        </label>
+
+        <label>Current page<input type="number" id="fCurrentPage" min="0" inputmode="numeric" placeholder="0" /></label>
+        <label>All pages<input type="number" id="fPageCount" min="1" inputmode="numeric" placeholder="Pages" /></label>
+
+        <label class="full">Notes
+          <textarea id="fNotes" rows="3" placeholder="What did you think of it?"></textarea>
+        </label>
+
+        <div class="modal-actions full">
+          <button type="button" class="btn btn-danger hidden" id="deleteBtn">Delete</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn" id="cancelBtn">Cancel</button>
+          <button type="submit" class="btn btn-dark" id="saveBtn">Save</button>
+        </div>
+      </form>
+      <div class="calendar-popover hidden" id="calendarPopover" role="dialog" aria-label="Choose date">
+        <div class="calendar-head">
+          <button type="button" class="calendar-nav" data-calendar-action="prev" aria-label="Previous month">‹</button>
+          <strong id="calendarMonth"></strong>
+          <button type="button" class="calendar-nav" data-calendar-action="next" aria-label="Next month">›</button>
+        </div>
+        <div class="calendar-weekdays" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+        <div class="calendar-days" id="calendarDays"></div>
+        <div class="calendar-foot">
+          <button type="button" class="calendar-clear" data-calendar-action="clear">Clear</button>
+          <button type="button" class="calendar-today" data-calendar-action="today">Today</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

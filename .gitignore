@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Android build outputs
+android/app/build/
+android/build/
+android/.gradle/
+android/app/*.apk
+android/**/*.dex
+android/**/*.jar
+android/**/classes*.dex
+
+# www/ is Capacitor web copy (generated)
+www/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
