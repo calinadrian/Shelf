@@ -1128,7 +1128,7 @@ async function repairImportedMetadata() {
   if (visibleChange) await reloadLibrary();
 }
 
-const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false };
+const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1, narratorVoice: 7, femaleVoice: 1, maleVoice: 9 };
 
 function loadReaderSettings() {
   try { return { ...DEFAULT_READER_SETTINGS, ...JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)) }; }
@@ -1172,6 +1172,10 @@ function applyReaderSettings({ rerender = true, restoreRatio = null } = {}) {
   $('#readerBrightness').value = settings.brightness;
   $('#readerCurl').checked = settings.curl;
   $('#readerEitherMargin').checked = settings.eitherMargin;
+  $('#readerListenRate').value = settings.listenRate;
+  $('#readerNarratorVoice').value = settings.narratorVoice;
+  $('#readerFemaleVoice').value = settings.femaleVoice;
+  $('#readerMaleVoice').value = settings.maleVoice;
   document.querySelectorAll('[data-reader-theme]').forEach((button) => button.classList.toggle('active', button.dataset.readerTheme === settings.theme));
   document.querySelectorAll('[data-reader-align]').forEach((button) => button.classList.toggle('active', button.dataset.readerAlign === settings.align));
   document.querySelectorAll('[data-reader-mode]').forEach((button) => button.classList.toggle('active', button.dataset.readerMode === settings.mode));
@@ -1752,6 +1756,201 @@ function saveOrOpenReaderBookmark() {
   renderReaderBookmarks();
 }
 
+function nativeSpeechPlugin() {
+  const plugin = window.Capacitor?.Plugins?.ShelfTextToSpeech;
+  return window.Capacitor?.isNativePlatform?.() && plugin?.speak ? plugin : null;
+}
+
+async function refreshKokoroStatus() {
+  const status = $('#readerVoiceModelStatus');
+  const download = $('#readerVoiceModelDownload');
+  const native = nativeSpeechPlugin();
+  if (!native?.getStatus) {
+    status.textContent = 'Browser voice is used outside the Android app.';
+    download.classList.add('hidden');
+    return false;
+  }
+  try {
+    const model = await native.getStatus();
+    status.textContent = model.installed ? 'Kokoro is installed and runs privately on this phone.' : 'Kokoro needs a one-time ~99 MB download and temporary room to unpack.';
+    download.classList.toggle('hidden', model.installed);
+    download.disabled = Boolean(model.downloading);
+    return Boolean(model.installed);
+  } catch {
+    status.textContent = 'Could not check the Kokoro voice model.';
+    return false;
+  }
+}
+
+function kokoroVoiceSegments(text, settings) {
+  const segments = [];
+  const voices = {
+    narrator: Number(settings.narratorVoice) || 7,
+    female: Number(settings.femaleVoice) || 1,
+    male: Number(settings.maleVoice) || 9,
+  };
+  let cursor = 0;
+  let unknownDialogue = 0;
+  const quote = /[“"]([^”"]{2,})[”"]/g;
+  const append = (value, speaker) => {
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return;
+    const previous = segments.at(-1);
+    if (previous?.speaker === speaker) previous.text += ` ${cleaned}`;
+    else segments.push({ text: cleaned, speaker });
+  };
+  for (const match of text.matchAll(quote)) {
+    append(text.slice(cursor, match.index), voices.narrator);
+    const context = text.slice(Math.max(0, match.index - 100), Math.min(text.length, match.index + match[0].length + 100)).toLowerCase();
+    const speechWords = '(?:said|asked|replied|answered|cried|called|whispered|shouted|murmured|continued)';
+    const female = new RegExp(`(?:\\b(?:she|her|hers|miss|mrs|ms)\\b.{0,45}${speechWords}|${speechWords}.{0,45}\\b(?:she|her|hers|miss|mrs|ms)\\b)`).test(context);
+    const male = new RegExp(`(?:\\b(?:he|him|his|mr|sir)\\b.{0,45}${speechWords}|${speechWords}.{0,45}\\b(?:he|him|his|mr|sir)\\b)`).test(context);
+    const speaker = female !== male ? (female ? voices.female : voices.male) : (unknownDialogue++ % 2 ? voices.male : voices.female);
+    append(match[1], speaker);
+    cursor = match.index + match[0].length;
+  }
+  append(text.slice(cursor), voices.narrator);
+  return segments.length ? segments : [{ text, speaker: voices.narrator }];
+}
+
+function updateReadAloudUi(status = activeReader?.readAloud?.status || 'stopped') {
+  const button = $('#readerListen');
+  const speaking = status === 'speaking' || status === 'loading';
+  button.textContent = speaking ? 'Ⅱ' : '▶';
+  button.classList.toggle('is-speaking', speaking);
+  button.disabled = status === 'loading';
+  button.setAttribute('aria-pressed', String(status !== 'stopped'));
+  button.setAttribute('aria-label', speaking ? 'Pause read aloud' : status === 'paused' ? 'Resume read aloud' : 'Read aloud');
+  $('#readerListenStatus').textContent = status === 'loading' ? 'Loading…' : status[0].toUpperCase() + status.slice(1);
+  $('#readerListenStop').disabled = status === 'stopped';
+}
+
+async function readerTextAtPosition(position = activeReader?.position) {
+  const reader = activeReader;
+  if (!reader || position !== reader.position) return '';
+  if (reader.pdf) {
+    const page = await reader.pdf.getPage(position + 1);
+    const content = await page.getTextContent();
+    return content.items.map((item) => `${item.str || ''}${item.hasEOL ? '\n' : ' '}`).join('').replace(/\s+/g, ' ').trim();
+  }
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const text = $('#readerPage').contentDocument?.body?.innerText?.replace(/\s+/g, ' ').trim();
+    if (text) return text;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return '';
+}
+
+function speechChunks(text, limit = 2400) {
+  const chunks = [];
+  let remaining = text.trim();
+  while (remaining) {
+    if (remaining.length <= limit) { chunks.push(remaining); break; }
+    const sample = remaining.slice(0, limit + 1);
+    let end = Math.max(sample.lastIndexOf('. '), sample.lastIndexOf('! '), sample.lastIndexOf('? '));
+    if (end < limit / 2) end = sample.lastIndexOf(' ');
+    if (end < 1) end = limit;
+    chunks.push(remaining.slice(0, end + 1).trim());
+    remaining = remaining.slice(end + 1).trim();
+  }
+  return chunks;
+}
+
+function speakBrowserChunk(state) {
+  if (!activeReader || activeReader.readAloud !== state || state.status !== 'speaking') return;
+  if (state.chunkIndex >= state.chunks.length) { advanceReadAloud(state); return; }
+  const utterance = new SpeechSynthesisUtterance(state.chunks[state.chunkIndex]);
+  utterance.rate = Number(activeReader.settings.listenRate) || 1;
+  utterance.onend = () => {
+    if (activeReader?.readAloud !== state || state.status !== 'speaking') return;
+    state.chunkIndex++;
+    speakBrowserChunk(state);
+  };
+  utterance.onerror = (event) => {
+    if (event.error === 'canceled' || event.error === 'interrupted') return;
+    stopReadAloud();
+    toast('Read aloud stopped because speech failed');
+  };
+  state.utterance = utterance;
+  window.speechSynthesis.speak(utterance);
+}
+
+async function startReadAloud() {
+  const reader = activeReader;
+  if (!reader) return;
+  const state = { status: 'loading', position: reader.position, chunkIndex: 0, chunks: [] };
+  reader.readAloud = state;
+  updateReadAloudUi();
+  const text = await readerTextAtPosition();
+  if (activeReader !== reader || reader.readAloud !== state) return;
+  if (!text) { stopReadAloud(); toast('There is no readable text on this page'); return; }
+  state.status = 'speaking';
+  updateReadAloudUi();
+  try {
+    const native = nativeSpeechPlugin();
+    if (native) {
+      const model = await native.getStatus();
+      if (!model.installed) {
+        stopReadAloud();
+        openReaderSheet('readerDisplaySheet');
+        await refreshKokoroStatus();
+        toast('Download the Kokoro voices once to start AI narration');
+        return;
+      }
+      await native.speak({ text, segments: kokoroVoiceSegments(text, reader.settings), rate: Number(reader.settings.listenRate) || 1 });
+    }
+    else if ('speechSynthesis' in window) {
+      state.chunks = speechChunks(text);
+      speakBrowserChunk(state);
+    } else throw new Error('Speech is unavailable');
+  } catch (error) {
+    console.error('Read aloud failed', error);
+    stopReadAloud();
+    toast('Text-to-speech is not available on this device');
+  }
+}
+
+async function toggleReadAloud() {
+  const state = activeReader?.readAloud;
+  if (!state || state.status === 'stopped') { await startReadAloud(); return; }
+  const native = nativeSpeechPlugin();
+  if (state.status === 'speaking' || state.status === 'loading') {
+    state.status = 'paused';
+    if (native) await native.pause();
+    else window.speechSynthesis?.pause();
+  } else {
+    state.status = 'speaking';
+    if (native) await native.resume();
+    else window.speechSynthesis?.resume();
+  }
+  updateReadAloudUi();
+}
+
+function stopReadAloud() {
+  const state = activeReader?.readAloud;
+  if (state) state.status = 'stopped';
+  const native = nativeSpeechPlugin();
+  if (native) native.stop().catch(() => {});
+  else window.speechSynthesis?.cancel();
+  updateReadAloudUi('stopped');
+}
+
+async function advanceReadAloud(state = activeReader?.readAloud) {
+  const reader = activeReader;
+  if (!reader || reader.readAloud !== state || state.status !== 'speaking') return;
+  const total = reader.pdf?.numPages || reader.parser.getSpine().length;
+  if (reader.position >= total - 1) {
+    stopReadAloud();
+    toast('Finished reading');
+    return;
+  }
+  state.status = 'loading';
+  updateReadAloudUi();
+  await renderReaderPosition(reader.position + 1, { preserveChrome: true, readAloudContinuation: true });
+  if (activeReader !== reader || reader.readAloud !== state) return;
+  await startReadAloud();
+}
+
 async function renderPdfPage() {
   const reader = activeReader;
   if (!reader?.pdf) return;
@@ -1792,11 +1991,13 @@ async function renderPdfPage() {
   if (activeReader === reader && reader.pdfRenderId === renderId) canvas.classList.remove('hidden');
 }
 
-async function renderReaderPosition(position, { preserveChrome = false } = {}) {
+async function renderReaderPosition(position, { preserveChrome = false, readAloudContinuation = false } = {}) {
   if (!activeReader) return;
   const { book, parser, pdf } = activeReader;
   const total = pdf ? pdf.numPages : parser.getSpine().length;
-  activeReader.position = Math.max(0, Math.min(Number(position) || 0, total - 1));
+  const nextPosition = Math.max(0, Math.min(Number(position) || 0, total - 1));
+  if (!readAloudContinuation && nextPosition !== activeReader.position && activeReader.readAloud && activeReader.readAloud.status !== 'stopped') stopReadAloud();
+  activeReader.position = nextPosition;
   if (activeReader.readingStartedAt) recordReadingTime(Date.now() - activeReader.readingStartedAt);
   activeReader.readingStartedAt = Date.now();
   hideReaderSelectionMenu();
@@ -1856,6 +2057,8 @@ async function openReader(book) {
     }
     setNativeReaderSelectionMenuSuppressed(Boolean(activeReader.parser));
     $('#reader').classList.toggle('reader-pdf-mode', Boolean(activeReader.pdf));
+    updateReadAloudUi('stopped');
+    refreshKokoroStatus();
     applyReaderSettings({ rerender: false });
     updateReaderBookmarkButton();
     await renderReaderPosition(activeReader.position);
@@ -1867,6 +2070,7 @@ async function openReader(book) {
 function closeReader() {
   if (!activeReader && $('#reader').classList.contains('hidden')) return;
   if (activeReader?.readingStartedAt) recordReadingTime(Date.now() - activeReader.readingStartedAt);
+  stopReadAloud();
   activeReader?.pdfRenderTask?.cancel();
   activeReader?.parser?.destroy(); activeReader?.pdf?.destroy(); activeReader = null;
   $('#reader').classList.add('hidden');
@@ -2334,6 +2538,45 @@ function bindEvents() {
   $('#readerClose').addEventListener('click', closeReader);
   $('#readerNavigate').addEventListener('click', () => openReaderSheet('readerNavSheet'));
   $('#readerTheme').addEventListener('click', () => openReaderSheet('readerDisplaySheet'));
+  $('#readerListen').addEventListener('click', () => toggleReadAloud().catch((error) => {
+    console.error('Could not toggle read aloud', error);
+    stopReadAloud();
+    toast('Text-to-speech is not available on this device');
+  }));
+  $('#readerListenStop').addEventListener('click', stopReadAloud);
+  $('#readerVoiceModelDownload').addEventListener('click', async () => {
+    const native = nativeSpeechPlugin();
+    if (!native?.downloadModel) return;
+    const button = $('#readerVoiceModelDownload');
+    button.disabled = true;
+    button.textContent = 'Downloading Kokoro…';
+    try {
+      await native.downloadModel();
+      toast('Kokoro voices installed');
+    } catch (error) {
+      console.error('Kokoro model download failed', error);
+      toast(error?.message || 'Kokoro download failed');
+    } finally {
+      button.textContent = 'Download Kokoro voices (~99 MB)';
+      await refreshKokoroStatus();
+    }
+  });
+  [['readerNarratorVoice', 'narratorVoice'], ['readerFemaleVoice', 'femaleVoice'], ['readerMaleVoice', 'maleVoice']].forEach(([id, key]) => {
+    $(`#${id}`).addEventListener('change', (event) => {
+      if (!activeReader) return;
+      activeReader.settings[key] = Number(event.target.value);
+      saveReaderSettings(activeReader.settings);
+    });
+  });
+  $('#readerListenRate').addEventListener('change', (event) => {
+    if (!activeReader) return;
+    activeReader.settings.listenRate = Number(event.target.value) || 1;
+    saveReaderSettings(activeReader.settings);
+    if (activeReader.readAloud?.status === 'speaking') {
+      stopReadAloud();
+      startReadAloud();
+    }
+  });
   $('#readerDimmer').addEventListener('click', closeReaderSheets);
   document.querySelectorAll('[data-close-sheet]').forEach((button) => button.addEventListener('click', closeReaderSheets));
   document.querySelectorAll('[data-reader-tab]').forEach((button) => button.addEventListener('click', () => {
@@ -2491,6 +2734,27 @@ function bindEvents() {
       if (readerOpen) closeReader();
       else if (modalOpen) closeModal();
       else App.exitApp().catch(() => {});
+    });
+  }
+  const speechPlugin = nativeSpeechPlugin();
+  if (speechPlugin?.addListener) {
+    speechPlugin.addListener('stateChange', ({ state }) => {
+      const readAloud = activeReader?.readAloud;
+      if (!readAloud || readAloud.status === 'stopped') return;
+      if (state === 'ended') advanceReadAloud(readAloud);
+      else if (state === 'error') {
+        stopReadAloud();
+        toast('Read aloud stopped because speech failed');
+      } else if (state === 'paused' || state === 'speaking') {
+        readAloud.status = state;
+        updateReadAloudUi();
+      }
+    });
+    speechPlugin.addListener('modelState', ({ state, progress, message }) => {
+      const status = $('#readerVoiceModelStatus');
+      if (state === 'downloading') status.textContent = `Downloading Kokoro voices… ${progress}%`;
+      else if (state === 'installed') status.textContent = 'Kokoro is installed and runs privately on this phone.';
+      else if (state === 'error') status.textContent = message || 'Kokoro download failed.';
     });
   }
 }

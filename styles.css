@@ -370,6 +370,9 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 .reader-dark .reader-header, .reader-dark .reader-controls { background: #191713; border-color: #332e25; }
 .reader-sepia .reader-header, .reader-sepia .reader-controls { background: #f4ecd8; }
 .reader-icon-btn { appearance: none; width: 42px; height: 42px; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 22px/1 var(--font-body); cursor: pointer; }
+.reader-listen { font-size: 18px; }
+.reader-listen.is-speaking { color: #356044; background: rgba(53,96,68,.12); }
+.reader-dark .reader-listen.is-speaking { color: #9bc7a4; background: rgba(155,199,164,.12); }
 #readerTheme { font-size: 15px; font-weight: 700; letter-spacing: -.06em; }
 .reader-bookmark { font-size: 25px; }
 .reader-bookmark.has-bookmark { color: #9b5f35; }
@@ -440,6 +443,12 @@ select:focus { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--fo
 .reader-display-sheet .reader-segmented, .reader-display-sheet .reader-theme-options { margin: 12px 0; }
 .reader-check { display: flex; align-items: center; gap: 10px; padding: 13px 2px; font-size: 13px; }
 .reader-check input { width: 18px; height: 18px; accent-color: #2f4d3a; }
+.reader-read-aloud { margin-top: 14px; padding-top: 14px; border-top: 1px solid rgba(128,110,80,.22); }
+.reader-read-aloud > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.reader-read-aloud > div span { color: #887b64; font-size: 12px; }
+.reader-read-aloud .reader-setting { grid-template-columns: 100px 1fr; }
+.reader-read-aloud .btn { width: 100%; margin-top: 10px; }
+.reader-model-status { margin: 8px 0 4px; color: #887b64; font-size: 12px; line-height: 1.4; }
 .reader-dimmer { position: absolute; z-index: 7; inset: 0; background: rgba(12,10,7,.34); pointer-events: none; opacity: 0; transition: opacity .2s; }
 .reader.sheet-open .reader-dimmer { pointer-events: auto; opacity: 1; }
 .reader-curl-out .reader-page, .reader-curl-out .reader-pdf { animation: reader-curl .26s ease; transform-origin: left center; }
