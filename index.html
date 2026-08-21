@@ -142,6 +142,23 @@
         <span class="streak-hint" id="streakHint">Read today to keep it going!</span>
       </section>
 
+      <section class="reading-goals" aria-labelledby="readingGoalsTitle">
+        <div class="reading-goals-head">
+          <div><span class="eyebrow">Your pace</span><h2 id="readingGoalsTitle">Reading goals</h2></div>
+          <button type="button" class="btn" id="editGoalsBtn">Edit goals</button>
+        </div>
+        <div class="goal-grid">
+          <div class="goal-card"><div class="goal-ring" id="dailyGoalRing"><strong id="dailyGoalValue">0</strong><span>min</span></div><div><strong>Today</strong><p id="dailyGoalCopy">0 of 5 minutes</p></div></div>
+          <div class="goal-card"><div class="goal-ring" id="yearGoalRing"><strong id="yearGoalValue">0</strong><span>books</span></div><div><strong>This year</strong><p id="yearGoalCopy">0 of 3 books</p></div></div>
+        </div>
+        <p class="goal-encouragement" id="goalEncouragement">Five quiet minutes is enough to keep the story moving.</p>
+        <form class="goal-editor hidden" id="goalEditor">
+          <label>Daily minutes <input type="number" id="dailyGoalInput" min="1" max="1440" value="5" /></label>
+          <label>Books per year <input type="number" id="yearGoalInput" min="1" max="999" value="3" /></label>
+          <button type="submit" class="btn btn-dark">Save goals</button>
+        </form>
+      </section>
+
       <!-- Quest tabs -->
       <div class="quest-tabs" role="tablist" aria-label="Quest views">
         <button type="button" class="quest-tab active" data-questtab="active" role="tab" aria-selected="true">Active <span class="quest-tab-count" id="activeCount">0</span></button>
@@ -236,10 +253,11 @@
   <section class="reader hidden" id="reader" aria-label="Book reader">
     <header class="reader-header">
       <button type="button" class="reader-icon-btn" id="readerClose" aria-label="Close reader">←</button>
+      <button type="button" class="reader-icon-btn" id="readerNavigate" aria-label="Open contents, search, and bookmarks" title="Navigate">☰</button>
       <div class="reader-title"><strong id="readerTitle"></strong><span id="readerPosition"></span></div>
       <button type="button" class="reader-icon-btn reader-bookmark" id="readerBookmark" aria-label="Save bookmark" title="Save bookmark">♡</button>
       <button type="button" class="reader-icon-btn reader-highlight" id="readerHighlight" aria-label="Highlight selected text" title="Highlight selected text" disabled>▰</button>
-      <button type="button" class="reader-icon-btn" id="readerTheme" aria-label="Toggle reader theme">◐</button>
+      <button type="button" class="reader-icon-btn" id="readerTheme" aria-label="Text and display settings" title="Text and display">Aa</button>
     </header>
     <main class="reader-stage" id="readerStage">
       <div class="reader-loading" id="readerLoading">Opening book…</div>
@@ -247,13 +265,54 @@
       <canvas class="reader-pdf hidden" id="readerPdf"></canvas>
     </main>
     <footer class="reader-controls">
-      <button type="button" class="btn" id="readerPrev">Previous</button>
+      <button type="button" class="reader-page-btn" id="readerPrev" aria-label="Previous page">‹</button>
       <input type="range" id="readerProgress" min="1" max="1" value="1" aria-label="Reading position" />
-      <button type="button" class="btn" id="readerNext">Next</button>
+      <button type="button" class="reader-page-btn" id="readerNext" aria-label="Next page">›</button>
     </footer>
+    <button type="button" class="reader-return hidden" id="readerReturn" aria-label="Return to previous reading spot" title="Return to previous spot">↩</button>
+    <aside class="reader-sheet hidden" id="readerNavSheet" aria-label="Reader navigation">
+      <div class="reader-sheet-head"><strong>Navigate</strong><button type="button" data-close-sheet aria-label="Close">×</button></div>
+      <div class="reader-sheet-tabs" role="tablist">
+        <button type="button" class="active" data-reader-tab="contents">Contents</button>
+        <button type="button" data-reader-tab="search">Search</button>
+        <button type="button" data-reader-tab="highlights">Highlights</button>
+        <button type="button" data-reader-tab="bookmarks">Bookmarks</button>
+      </div>
+      <div class="reader-sheet-pane active" data-reader-pane="contents"><ol class="reader-toc" id="readerToc"></ol></div>
+      <div class="reader-sheet-pane" data-reader-pane="search">
+        <form class="reader-search-form" id="readerSearchForm"><input type="search" id="readerSearchInput" placeholder="Search in book…" aria-label="Search in book" /><button type="submit">Search</button></form>
+        <p class="reader-sheet-status" id="readerSearchStatus"></p><ol class="reader-search-results" id="readerSearchResults"></ol>
+      </div>
+      <div class="reader-sheet-pane" data-reader-pane="highlights"><ol class="reader-highlights" id="readerHighlights"></ol></div>
+      <div class="reader-sheet-pane" data-reader-pane="bookmarks"><ol class="reader-bookmarks" id="readerBookmarks"></ol></div>
+    </aside>
+    <aside class="reader-sheet reader-display-sheet hidden" id="readerDisplaySheet" aria-label="Text and display settings">
+      <div class="reader-sheet-head"><strong>Text &amp; display</strong><button type="button" data-close-sheet aria-label="Close">×</button></div>
+      <div class="reader-theme-options" role="group" aria-label="Reading theme">
+        <button type="button" data-reader-theme="light">Light</button><button type="button" data-reader-theme="sepia">Sepia</button><button type="button" data-reader-theme="dark">Night</button>
+      </div>
+      <label class="reader-setting">Font <select id="readerFont"><option value="serif">Publisher serif</option><option value="sans">Clean sans</option><option value="dyslexic">Readable</option></select></label>
+      <label class="reader-setting">Text size <input type="range" id="readerFontSize" min="14" max="30" step="1" /></label>
+      <label class="reader-setting">Line spacing <input type="range" id="readerLineHeight" min="1.2" max="2.2" step="0.1" /></label>
+      <label class="reader-setting">Margins <input type="range" id="readerMargins" min="0" max="16" step="1" /></label>
+      <label class="reader-setting">Brightness <input type="range" id="readerBrightness" min="35" max="100" step="1" /></label>
+      <div class="reader-segmented" role="group" aria-label="Text alignment"><button type="button" data-reader-align="left">Ragged</button><button type="button" data-reader-align="justify">Justified</button></div>
+      <div class="reader-segmented" role="group" aria-label="Reading mode"><button type="button" data-reader-mode="page">Pages</button><button type="button" data-reader-mode="scroll">Scroll</button></div>
+      <label class="reader-check"><input type="checkbox" id="readerCurl" /> Page-curl animation</label>
+      <label class="reader-check"><input type="checkbox" id="readerEitherMargin" /> Either margin advances</label>
+    </aside>
+    <div class="reader-dimmer" id="readerDimmer" aria-hidden="true"></div>
     <div class="reader-selection-menu hidden" id="readerSelectionMenu" role="toolbar" aria-label="Selected text actions">
-      <button type="button" data-selection-action="highlight">Highlight</button>
+      <div class="reader-highlight-swatches" role="group" aria-label="Highlight color">
+        <button type="button" class="highlight-swatch swatch-yellow" data-selection-action="highlight-yellow" aria-label="Highlight yellow" title="Yellow"></button>
+        <button type="button" class="highlight-swatch swatch-green" data-selection-action="highlight-green" aria-label="Highlight green" title="Green"></button>
+        <button type="button" class="highlight-swatch swatch-blue" data-selection-action="highlight-blue" aria-label="Highlight blue" title="Blue"></button>
+        <button type="button" class="highlight-swatch swatch-pink" data-selection-action="highlight-pink" aria-label="Highlight pink" title="Pink"></button>
+        <button type="button" class="highlight-swatch swatch-purple" data-selection-action="highlight-purple" aria-label="Highlight purple" title="Purple"></button>
+        <button type="button" class="highlight-swatch swatch-orange" data-selection-action="highlight-orange" aria-label="Highlight orange" title="Orange"></button>
+      </div>
       <button type="button" data-selection-action="note">Add note</button>
+      <button type="button" data-selection-action="define">Define</button>
       <button type="button" data-selection-action="translate">Translate</button>
       <button type="button" data-selection-action="copy">Copy</button>
       <button type="button" data-selection-action="share">Share</button>

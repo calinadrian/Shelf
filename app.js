@@ -83,6 +83,9 @@ let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
 let activeReader = null;
 const PROGRESS_KEY = 'shelf-progress';
 const STREAK_KEY = 'shelf-streak';
+const READING_GOALS_KEY = 'shelf-reading-goals';
+const READING_LOG_KEY = 'shelf-reading-log';
+const READER_SETTINGS_KEY = 'shelf-reader-settings';
 const UPDATE_REPO = 'calinadrian/Shelf';
 const { localDateKey, normalizeBook, updateStreak, isNewerVersion, validateBackup } = window.ShelfCore;
 
@@ -119,6 +122,51 @@ function loadProgress() {
 
 function saveProgress(progress) {
   try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress)); } catch { /* private mode */ }
+}
+
+function loadReadingGoals() {
+  try { return { dailyMinutes: 5, yearlyBooks: 3, ...JSON.parse(localStorage.getItem(READING_GOALS_KEY)) }; }
+  catch { return { dailyMinutes: 5, yearlyBooks: 3 }; }
+}
+
+function loadReadingLog() {
+  try { return JSON.parse(localStorage.getItem(READING_LOG_KEY)) || {}; }
+  catch { return {}; }
+}
+
+function saveReadingLog(log) {
+  try { localStorage.setItem(READING_LOG_KEY, JSON.stringify(log)); } catch { /* private mode */ }
+}
+
+function recordReadingTime(milliseconds) {
+  if (!milliseconds || milliseconds < 1000) return;
+  const log = loadReadingLog();
+  const key = localDateKey(new Date());
+  log[key] = Math.max(0, Number(log[key]) || 0) + milliseconds;
+  saveReadingLog(log);
+}
+
+function renderReadingGoals() {
+  const goals = loadReadingGoals();
+  const todayMs = Number(loadReadingLog()[localDateKey(new Date())]) || 0;
+  const todayMinutes = Math.floor(todayMs / 60000);
+  const year = new Date().getFullYear();
+  const books = library.filter((book) => book.status === 'read' && book.finishDate && new Date(`${book.finishDate}T00:00:00`).getFullYear() === year).length;
+  $('#dailyGoalValue').textContent = String(todayMinutes);
+  $('#yearGoalValue').textContent = String(books);
+  $('#dailyGoalCopy').textContent = `${todayMinutes} of ${goals.dailyMinutes} minutes`;
+  $('#yearGoalCopy').textContent = `${books} of ${goals.yearlyBooks} books`;
+  $('#dailyGoalRing').style.setProperty('--goal-pct', `${Math.min(100, todayMinutes / goals.dailyMinutes * 100)}%`);
+  $('#yearGoalRing').style.setProperty('--goal-pct', `${Math.min(100, books / goals.yearlyBooks * 100)}%`);
+  $('#dailyGoalInput').value = goals.dailyMinutes;
+  $('#yearGoalInput').value = goals.yearlyBooks;
+  const dailyDone = todayMinutes >= goals.dailyMinutes;
+  const yearlyDone = books >= goals.yearlyBooks;
+  $('#goalEncouragement').textContent = dailyDone && yearlyDone
+    ? 'Both goals reached — every page from here is a victory lap.'
+    : dailyDone ? 'Daily goal complete. Your streak is safe for today.'
+      : todayMinutes ? `${Math.max(1, goals.dailyMinutes - todayMinutes)} more minute${goals.dailyMinutes - todayMinutes === 1 ? '' : 's'} to reach today’s goal.`
+        : 'Five quiet minutes is enough to keep the story moving.';
 }
 
 /* ---------------- Streak tracking ---------------- */
@@ -271,6 +319,7 @@ function renderProgress() {
 
   // Streak
   renderStreak();
+  renderReadingGoals();
 
   // Render quest tabs
   const activeTab = document.querySelector('.quest-tab.active')?.dataset.questtab || 'active';
@@ -1069,10 +1118,58 @@ async function repairImportedMetadata() {
   if (visibleChange) await reloadLibrary();
 }
 
-function readerDocument(html, css, dark) {
-  const colors = dark ? 'color:#ece3d0;background:#16130e' : 'color:#211d16;background:#fffcf5';
+const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false };
+
+function loadReaderSettings() {
+  try { return { ...DEFAULT_READER_SETTINGS, ...JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)) }; }
+  catch { return { ...DEFAULT_READER_SETTINGS }; }
+}
+
+function saveReaderSettings(settings) {
+  try { localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(settings)); } catch { /* private mode */ }
+}
+
+function readerDocument(html, css, settings) {
+  const themes = {
+    light: 'color:#211d16;background:#fffcf5',
+    sepia: 'color:#382f24;background:#f4ecd8',
+    dark: 'color:#ece3d0;background:#16130e',
+  };
+  const fonts = { serif: 'Georgia,serif', sans: 'Arial,sans-serif', dyslexic: 'Verdana,Tahoma,sans-serif' };
+  const colors = themes[settings.theme] || themes.sepia;
+  const pageMargin = Math.max(0, Number(settings.margins) || 0);
+  const paged = settings.mode === 'page'
+    ? `html{width:100vw!important;height:100vh!important;overflow-x:auto!important;overflow-y:hidden!important;scroll-behavior:smooth;scrollbar-width:none}html::-webkit-scrollbar{display:none}body{width:100vw!important;max-width:none!important;height:100vh!important;max-height:100vh!important;margin:0!important;padding:2rem ${pageMargin}vw!important;column-width:calc(100vw - ${pageMargin * 2}vw)!important;column-gap:${pageMargin * 2}vw!important;column-fill:auto;overflow:visible!important;box-sizing:border-box}img,svg{max-height:calc(100vh - 4rem);object-fit:contain}`
+    : 'html{overflow-x:hidden;overflow-y:auto}';
+  const darkOverrides = settings.theme === 'dark'
+    ? 'html,body{color:#ddd6c9!important;background:#161513!important}body *{color:inherit!important}body :where(div,section,article,main,aside,header,footer,p,blockquote,pre,table,tbody,tr,td,th){background-color:transparent!important}a{color:#9bc7a4!important}mark.shelf-highlight{color:#201c16!important}'
+    : '';
   const stylesheets = (css || []).map((item) => `<link rel="stylesheet" href="${esc(item.href)}">`).join('');
-  return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${stylesheets}<style>html{${colors};overscroll-behavior-y:contain;touch-action:pan-y}body{max-width:46rem;margin:0 auto;padding:2rem 8vw;font:18px/1.7 Georgia,serif;color:inherit;background:inherit}img,svg{max-width:100%;height:auto}a{color:#3f7650}pre{white-space:pre-wrap}mark.shelf-highlight{color:inherit;background:#f2c94c99;border-radius:.15em;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer}mark.shelf-note{background:#7db7e58c;text-decoration:underline dotted;cursor:pointer}</style>${html}`;
+  return `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">${stylesheets}<style>html{${colors};overscroll-behavior:contain;touch-action:pan-y;background:inherit}${paged}body{max-width:46rem;margin:0 auto;padding:2rem ${pageMargin}vw;font:${settings.fontSize}px/${settings.lineHeight} ${fonts[settings.font] || fonts.serif};text-align:${settings.align};color:inherit;background:inherit}img,svg{max-width:100%;height:auto}a{color:#3f7650}pre{white-space:pre-wrap}${darkOverrides}mark.shelf-highlight{color:inherit;background:#f2c94c99;border-radius:.15em;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer}mark.shelf-highlight[data-color="green"]{background:#66bd8399}mark.shelf-highlight[data-color="blue"]{background:#66a9dc99}mark.shelf-highlight[data-color="pink"]{background:#e989a399}mark.shelf-highlight[data-color="purple"]{background:#ad8ad599}mark.shelf-highlight[data-color="orange"]{background:#e99a4b99}mark.shelf-highlight.shelf-note{background:#7db7e58c;text-decoration:underline dotted;cursor:pointer}mark.shelf-highlight.shelf-focus{animation:shelf-focus 1.4s ease}@keyframes shelf-focus{0%,100%{outline:0 solid transparent}35%{outline:4px solid #3f765066}}</style>${html}`;
+}
+
+function applyReaderSettings({ rerender = true, restoreRatio = null } = {}) {
+  if (!activeReader) return;
+  const settings = activeReader.settings;
+  const reader = $('#reader');
+  reader.classList.toggle('reader-dark', settings.theme === 'dark');
+  reader.classList.toggle('reader-sepia', settings.theme === 'sepia');
+  $('#readerStage').style.filter = `brightness(${settings.brightness}%)`;
+  $('#readerFont').value = settings.font;
+  $('#readerFontSize').value = settings.fontSize;
+  $('#readerLineHeight').value = settings.lineHeight;
+  $('#readerMargins').value = settings.margins;
+  $('#readerBrightness').value = settings.brightness;
+  $('#readerCurl').checked = settings.curl;
+  $('#readerEitherMargin').checked = settings.eitherMargin;
+  document.querySelectorAll('[data-reader-theme]').forEach((button) => button.classList.toggle('active', button.dataset.readerTheme === settings.theme));
+  document.querySelectorAll('[data-reader-align]').forEach((button) => button.classList.toggle('active', button.dataset.readerAlign === settings.align));
+  document.querySelectorAll('[data-reader-mode]').forEach((button) => button.classList.toggle('active', button.dataset.readerMode === settings.mode));
+  saveReaderSettings(settings);
+  if (rerender && activeReader.parser) {
+    if (restoreRatio != null) activeReader.pendingScrollRatio = Math.max(0, Math.min(1, restoreRatio));
+    renderReaderPosition(activeReader.position, { preserveChrome: true });
+  }
 }
 
 function setReaderChrome(hidden) {
@@ -1148,11 +1245,8 @@ function bindReflowableSwipeNavigation(target) {
     const elapsed = performance.now() - start.time;
     start = null;
     if (elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
-    const total = activeReader.parser.getSpine().length;
-    const next = activeReader.position + (dx < 0 ? 1 : -1);
-    if (next < 0 || next >= total) return;
     event.preventDefault();
-    renderReaderPosition(next, { preserveChrome: true });
+    navigateReader(dx < 0 ? 1 : -1);
   }, { passive: false });
   target.addEventListener('pointercancel', () => { start = null; }, { passive: true });
 }
@@ -1170,10 +1264,8 @@ function bindPdfSwipeNavigation(target) {
     const elapsed = performance.now() - start.time;
     start = null;
     if (elapsed > 700 || Math.abs(dx) < 55 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
-    const next = activeReader.position + (dx < 0 ? 1 : -1);
-    if (next < 0 || next >= activeReader.pdf.numPages) return;
     event.preventDefault();
-    renderReaderPosition(next, { preserveChrome: true });
+    navigateReader(dx < 0 ? 1 : -1);
   }, { passive: false });
   target.addEventListener('pointercancel', () => { start = null; }, { passive: true });
 }
@@ -1230,34 +1322,77 @@ function bindReflowableReaderGestures() {
   activeReader.lastScrollTop = doc.scrollingElement?.scrollTop || 0;
   activeReader.scrollDistance = 0;
   applyStoredHighlights(doc);
+  if (activeReader.pendingHighlightId) {
+    const highlightId = activeReader.pendingHighlightId;
+    activeReader.pendingHighlightId = null;
+    requestAnimationFrame(() => {
+      const mark = [...doc.querySelectorAll('[data-highlight-id]')].find((item) => item.dataset.highlightId === highlightId);
+      if (!mark) return;
+      mark.scrollIntoView({ block: 'center', inline: 'center' });
+      mark.classList.add('shelf-focus');
+    });
+  }
   if (activeReader.pendingScrollRatio != null) {
     const ratio = activeReader.pendingScrollRatio;
     activeReader.pendingScrollRatio = null;
     const restore = () => {
       const root = doc.scrollingElement;
-      if (root) root.scrollTop = ratio * Math.max(0, root.scrollHeight - root.clientHeight);
+      if (root && activeReader?.settings.mode === 'page') {
+        const target = ratio * Math.max(0, root.scrollWidth - root.clientWidth);
+        root.scrollLeft = Math.round(target / Math.max(1, root.clientWidth)) * root.clientWidth;
+      }
+      else if (root) root.scrollTop = ratio * Math.max(0, root.scrollHeight - root.clientHeight);
     };
     requestAnimationFrame(restore);
     setTimeout(restore, 120);
   }
   doc.addEventListener('scroll', () => handleReaderScroll(doc.scrollingElement?.scrollTop || 0), { passive: true });
-  bindReaderDoubleTap(doc);
   bindReflowableSwipeNavigation(doc);
   doc.addEventListener('selectionchange', updateReaderSelectionActions);
   doc.addEventListener('click', (event) => {
     const mark = event.target.closest?.('mark.shelf-highlight');
-    if (!mark || !activeReader?.parser) return;
-    const id = mark.dataset.highlightId;
-    const annotation = (activeReader.book.readerHighlights || []).find((item) => item.id === id);
-    if (annotation?.note) {
-      toast(annotation.note);
+    if (mark && activeReader?.parser) {
+      const id = mark.dataset.highlightId;
+      const annotation = (activeReader.book.readerHighlights || []).find((item) => item.id === id);
+      if (annotation?.note) toast(annotation.note);
+      else {
+        activeReader.book.readerHighlights = (activeReader.book.readerHighlights || []).filter((item) => item.id !== id);
+        mark.replaceWith(...mark.childNodes);
+        dbPut(activeReader.book).catch(() => {});
+        renderReaderHighlights();
+        toast('Highlight removed');
+      }
       return;
     }
-    activeReader.book.readerHighlights = (activeReader.book.readerHighlights || []).filter((item) => item.id !== id);
-    mark.replaceWith(...mark.childNodes);
-    dbPut(activeReader.book).catch(() => {});
-    toast('Highlight removed');
+    const selection = doc.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    const width = doc.documentElement.clientWidth;
+    const x = event.clientX;
+    if (activeReader.settings.mode === 'page' && (x < width * .18 || x > width * .82)) {
+      const direction = activeReader.settings.eitherMargin ? 1 : (x < width / 2 ? -1 : 1);
+      navigateReader(direction);
+    } else setReaderChrome(!activeReader.chromeHidden);
   });
+}
+
+function navigateReader(direction) {
+  if (!activeReader) return;
+  if (activeReader.parser && activeReader.settings.mode === 'page') {
+    const root = $('#readerPage').contentDocument?.scrollingElement;
+    if (root) {
+      const step = root.clientWidth;
+      const next = root.scrollLeft + direction * step;
+      const max = Math.max(0, root.scrollWidth - root.clientWidth);
+      if (next >= 0 && next <= max + 2 && Math.abs(next - root.scrollLeft) > 2) {
+        root.scrollTo({ left: Math.max(0, Math.min(max, next)), behavior: activeReader.settings.curl ? 'smooth' : 'auto' });
+        return;
+      }
+    }
+  }
+  const total = activeReader.pdf?.numPages || activeReader.parser.getSpine().length;
+  const nextPosition = activeReader.position + direction;
+  if (nextPosition < 0 || nextPosition >= total) return;
+  renderReaderPosition(nextPosition, { preserveChrome: true });
 }
 
 function textOffset(body, node, offset) {
@@ -1288,10 +1423,11 @@ function rangeFromTextOffsets(doc, start, end) {
   return null;
 }
 
-function wrapHighlightRange(range, id, kind = 'highlight', note = '') {
+function wrapHighlightRange(range, id, kind = 'highlight', note = '', color = 'yellow') {
   const mark = range.startContainer.ownerDocument.createElement('mark');
   mark.className = `shelf-highlight${kind === 'note' ? ' shelf-note' : ''}`;
   mark.dataset.highlightId = id;
+  mark.dataset.color = color;
   mark.title = note || 'Tap to remove highlight';
   mark.append(range.extractContents());
   range.insertNode(mark);
@@ -1303,7 +1439,7 @@ function applyStoredHighlights(doc) {
     .sort((a, b) => b.start - a.start);
   highlights.forEach((item) => {
     const range = rangeFromTextOffsets(doc, item.start, item.end);
-    if (range && !range.collapsed) wrapHighlightRange(range, item.id, item.kind, item.note);
+    if (range && !range.collapsed) wrapHighlightRange(range, item.id, item.kind, item.note, item.color);
   });
 }
 
@@ -1342,12 +1478,12 @@ function selectedReaderRange() {
   return activeReader.selectedRange || null;
 }
 
-function createReaderAnnotation(kind, note = '') {
+function createReaderAnnotation(kind, note = '', color = 'yellow') {
   const doc = $('#readerPage').contentDocument;
   const range = selectedReaderRange();
   if (!doc?.body || !range || !doc.body.contains(range.commonAncestorContainer)) return false;
   const annotation = {
-    id: newId(), kind, note,
+    id: newId(), kind, note, color,
     position: activeReader.position,
     start: textOffset(doc.body, range.startContainer, range.startOffset),
     end: textOffset(doc.body, range.endContainer, range.endOffset),
@@ -1356,24 +1492,37 @@ function createReaderAnnotation(kind, note = '') {
   };
   if (annotation.end <= annotation.start) return false;
   activeReader.book.readerHighlights = [...(activeReader.book.readerHighlights || []), annotation];
-  wrapHighlightRange(range, annotation.id, kind, note);
+  wrapHighlightRange(range, annotation.id, kind, note, color);
   $('#readerPage').contentWindow?.getSelection()?.removeAllRanges();
   dbPut(activeReader.book).catch(() => {});
+  renderReaderHighlights();
   hideReaderSelectionMenu();
   return true;
 }
 
-function saveReaderHighlight() {
-  if (createReaderAnnotation('highlight')) toast('Text highlighted');
+function saveReaderHighlight(color = 'yellow') {
+  if (createReaderAnnotation('highlight', '', color)) toast('Text highlighted');
 }
 
 async function handleReaderSelectionAction(action) {
   const text = activeReader?.selectedText || selectedReaderRange()?.toString().trim();
   if (!text) return;
-  if (action === 'highlight') saveReaderHighlight();
+  if (action.startsWith('highlight-')) saveReaderHighlight(action.slice(10));
   else if (action === 'note') {
     const note = window.prompt('Add a note for this passage:');
     if (note?.trim() && createReaderAnnotation('note', note.trim())) toast('Note saved');
+  } else if (action === 'define') {
+    const word = text.trim().split(/\s+/)[0].replace(/[^\p{L}'-]/gu, '');
+    try {
+      const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+      if (!response.ok) throw new Error('Definition unavailable');
+      const data = await response.json();
+      const meaning = data[0]?.meanings?.[0];
+      const definition = meaning?.definitions?.[0]?.definition;
+      if (!definition) throw new Error('Definition unavailable');
+      window.alert(`${word}${meaning.partOfSpeech ? ` · ${meaning.partOfSpeech}` : ''}\n\n${definition}`);
+    } catch { toast(`No definition found for “${word}”`); }
+    hideReaderSelectionMenu();
   } else if (action === 'translate') {
     const language = (navigator.language || 'en').split('-')[0];
     window.open(`https://translate.google.com/?sl=auto&tl=${encodeURIComponent(language)}&text=${encodeURIComponent(text)}&op=translate`, '_blank', 'noopener');
@@ -1389,14 +1538,139 @@ async function handleReaderSelectionAction(action) {
   }
 }
 
+function closeReaderSheets() {
+  $('#readerNavSheet').classList.add('hidden');
+  $('#readerDisplaySheet').classList.add('hidden');
+  $('#reader').classList.remove('sheet-open');
+}
+
+function openReaderSheet(id) {
+  const sheet = $(`#${id}`);
+  const opening = sheet.classList.contains('hidden');
+  closeReaderSheets();
+  if (!opening) return;
+  sheet.classList.remove('hidden');
+  $('#reader').classList.add('sheet-open');
+  setReaderChrome(false);
+  if (id === 'readerNavSheet') {
+    renderReaderToc();
+    renderReaderHighlights();
+    renderReaderBookmarks();
+  } else applyReaderSettings({ rerender: false });
+}
+
+function flattenToc(items, depth = 0, result = []) {
+  (items || []).forEach((item) => {
+    result.push({ ...item, depth });
+    flattenToc(item.children, depth + 1, result);
+  });
+  return result;
+}
+
+function tocPosition(item) {
+  if (!activeReader?.parser) return 0;
+  const spine = activeReader.parser.getSpine();
+  let resolved;
+  try { resolved = activeReader.parser.resolveHref?.(item.href); } catch { /* malformed book link */ }
+  const id = resolved?.id || item.id || item.href;
+  const index = spine.findIndex((section) => section.id === id || String(item.href || '').includes(section.id));
+  return Math.max(0, index);
+}
+
+function renderReaderToc() {
+  if (!activeReader) return;
+  const toc = activeReader.parser ? flattenToc(activeReader.parser.getToc?.() || []) : [];
+  const total = activeReader.pdf?.numPages || 0;
+  const entries = toc.length ? toc.map((item) => ({ label: item.label || 'Untitled section', position: tocPosition(item), depth: item.depth }))
+    : Array.from({ length: total || activeReader.parser?.getSpine().length || 0 }, (_, index) => ({ label: activeReader.pdf ? `Page ${index + 1}` : `Section ${index + 1}`, position: index, depth: 0 }));
+  $('#readerToc').innerHTML = entries.map((item) => `<li class="${item.position === activeReader.position ? 'active' : ''}" style="padding-left:${item.depth * 14}px"><button type="button" data-reader-position="${item.position}">${esc(item.label)}<small>${activeReader.pdf ? 'Page' : 'Section'} ${item.position + 1}</small></button></li>`).join('') || '<li><button type="button" disabled>No contents available</button></li>';
+}
+
+function readerScrollRatio(mode = activeReader?.settings.mode) {
+  if (!activeReader?.parser) return 0;
+  const root = $('#readerPage').contentDocument?.scrollingElement;
+  if (!root) return 0;
+  const horizontal = mode === 'page';
+  const range = horizontal ? root.scrollWidth - root.clientWidth : root.scrollHeight - root.clientHeight;
+  return range > 0 ? (horizontal ? root.scrollLeft : root.scrollTop) / range : 0;
+}
+
+function currentReaderScrollRatio() {
+  return readerScrollRatio();
+}
+
+function rememberReaderSpot() {
+  if (!activeReader) return;
+  activeReader.returnSpot = { position: activeReader.position, scrollRatio: currentReaderScrollRatio() };
+  $('#readerReturn').classList.remove('hidden');
+}
+
+function jumpToReaderPosition(position, scrollRatio = 0) {
+  if (!activeReader) return;
+  rememberReaderSpot();
+  activeReader.pendingScrollRatio = Math.max(0, Math.min(1, Number(scrollRatio) || 0));
+  closeReaderSheets();
+  renderReaderPosition(position, { preserveChrome: true });
+}
+
+function renderReaderBookmarks() {
+  if (!activeReader) return;
+  const bookmarks = activeReader.book.readerBookmarks || [];
+  $('#readerBookmarks').innerHTML = bookmarks.length ? bookmarks.slice().reverse().map((item) => `<li><button type="button" data-bookmark-id="${esc(item.id)}">${esc(item.label || `${activeReader.pdf ? 'Page' : 'Section'} ${item.position + 1}`)}<small>${new Date(item.createdAt).toLocaleDateString()}</small></button></li>`).join('') : '<li><button type="button" disabled>No bookmarks yet</button></li>';
+}
+
+function renderReaderHighlights() {
+  if (!activeReader) return;
+  const highlights = (activeReader.book.readerHighlights || []).slice().reverse();
+  $('#readerHighlights').innerHTML = highlights.length ? highlights.map((item) => {
+    const color = ['yellow', 'green', 'blue', 'pink', 'purple', 'orange'].includes(item.color) ? item.color : 'yellow';
+    const location = `${activeReader.pdf ? 'Page' : 'Section'} ${item.position + 1}`;
+    return `<li><button type="button" data-highlight-jump="${esc(item.id)}"><span class="reader-highlight-row"><span class="highlight-dot ${color}" aria-hidden="true"></span><span><span class="reader-highlight-text">${esc(item.text || 'Highlighted passage')}</span>${item.note ? `<span class="reader-highlight-note">${esc(item.note)}</span>` : ''}<small>${location} · ${new Date(item.createdAt).toLocaleDateString()}</small></span></span></button></li>`;
+  }).join('') : '<li><button type="button" disabled>No highlights yet</button></li>';
+}
+
+function jumpToReaderHighlight(id) {
+  const item = (activeReader?.book.readerHighlights || []).find((highlight) => highlight.id === id);
+  if (!item) return;
+  rememberReaderSpot();
+  activeReader.pendingHighlightId = item.id;
+  closeReaderSheets();
+  renderReaderPosition(item.position, { preserveChrome: true });
+}
+
+async function searchReader(query) {
+  if (!activeReader || !query) return;
+  const status = $('#readerSearchStatus');
+  const results = [];
+  const total = activeReader.pdf?.numPages || activeReader.parser.getSpine().length;
+  status.textContent = `Searching ${total} ${activeReader.pdf ? 'pages' : 'sections'}…`;
+  $('#readerSearchResults').innerHTML = '';
+  for (let index = 0; index < total; index += 1) {
+    let text = '';
+    if (activeReader.pdf) {
+      const page = await activeReader.pdf.getPage(index + 1);
+      text = (await page.getTextContent()).items.map((item) => item.str).join(' ');
+    } else {
+      const chapter = await activeReader.parser.loadChapter(activeReader.parser.getSpine()[index].id);
+      text = new DOMParser().parseFromString(chapter?.html || '', 'text/html').body.textContent || '';
+    }
+    const offset = text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+    if (offset >= 0) results.push({ position: index, snippet: text.slice(Math.max(0, offset - 55), offset + query.length + 90).replace(/\s+/g, ' ').trim() });
+    if (index % 5 === 0) status.textContent = `Searching… ${index + 1} of ${total}`;
+  }
+  status.textContent = results.length ? `${results.length} result${results.length === 1 ? '' : 's'}` : 'No matches found';
+  $('#readerSearchResults').innerHTML = results.map((item) => `<li><button type="button" data-reader-position="${item.position}">${esc(item.snippet)}<small>${activeReader.pdf ? 'Page' : 'Section'} ${item.position + 1}</small></button></li>`).join('');
+}
+
 function updateReaderBookmarkButton() {
   const button = $('#readerBookmark');
-  const bookmark = activeReader?.book?.readerBookmark;
-  const available = Boolean(activeReader?.parser);
+  const bookmarks = activeReader?.book?.readerBookmarks || [];
+  const bookmark = bookmarks.find((item) => item.position === activeReader?.position);
+  const available = Boolean(activeReader);
   button.classList.toggle('hidden', !available);
   button.classList.toggle('has-bookmark', Boolean(bookmark));
   button.textContent = bookmark ? '♥' : '♡';
-  const label = bookmark ? 'Go to bookmark' : 'Save bookmark';
+  const label = bookmark ? 'Remove bookmark' : 'Save bookmark';
   button.setAttribute('aria-label', label);
   button.title = label;
   $('#readerHighlight').classList.toggle('hidden', !available);
@@ -1404,25 +1678,20 @@ function updateReaderBookmarkButton() {
 }
 
 function saveOrOpenReaderBookmark() {
-  if (!activeReader?.parser) return;
+  if (!activeReader) return;
   const { book } = activeReader;
-  const bookmark = book.readerBookmark;
+  book.readerBookmarks ||= book.readerBookmark ? [{ id: newId(), ...book.readerBookmark, label: 'Saved spot' }] : [];
+  const bookmark = book.readerBookmarks.find((item) => item.position === activeReader.position);
   if (bookmark) {
-    activeReader.pendingScrollRatio = Math.max(0, Math.min(1, Number(bookmark.scrollRatio) || 0));
-    renderReaderPosition(bookmark.position, { preserveChrome: true });
-    toast('Moved to bookmark');
-    return;
+    book.readerBookmarks = book.readerBookmarks.filter((item) => item.id !== bookmark.id);
+    toast('Bookmark removed');
+  } else {
+    book.readerBookmarks.push({ id: newId(), position: activeReader.position, scrollRatio: currentReaderScrollRatio(), label: `${activeReader.pdf ? 'Page' : 'Section'} ${activeReader.position + 1}`, createdAt: new Date().toISOString() });
+    toast('Bookmark saved');
   }
-  const root = $('#readerPage').contentDocument?.scrollingElement;
-  const scrollRange = root ? Math.max(0, root.scrollHeight - root.clientHeight) : 0;
-  book.readerBookmark = {
-    position: activeReader.position,
-    scrollRatio: scrollRange ? root.scrollTop / scrollRange : 0,
-    createdAt: new Date().toISOString(),
-  };
   dbPut(book).catch(() => {});
   updateReaderBookmarkButton();
-  toast('Bookmark saved');
+  renderReaderBookmarks();
 }
 
 async function renderPdfPage() {
@@ -1470,6 +1739,8 @@ async function renderReaderPosition(position, { preserveChrome = false } = {}) {
   const { book, parser, pdf } = activeReader;
   const total = pdf ? pdf.numPages : parser.getSpine().length;
   activeReader.position = Math.max(0, Math.min(Number(position) || 0, total - 1));
+  if (activeReader.readingStartedAt) recordReadingTime(Date.now() - activeReader.readingStartedAt);
+  activeReader.readingStartedAt = Date.now();
   hideReaderSelectionMenu();
   activeReader.lastScrollTop = 0;
   activeReader.scrollDistance = 0;
@@ -1483,14 +1754,17 @@ async function renderReaderPosition(position, { preserveChrome = false } = {}) {
   } else {
     const spine = parser.getSpine();
     const chapter = await parser.loadChapter(spine[activeReader.position].id);
-    $('#readerPage').srcdoc = readerDocument(chapter?.html || '<p>This section is empty.</p>', chapter?.css, activeReader.dark);
+    $('#readerPage').srcdoc = readerDocument(chapter?.html || '<p>This section is empty.</p>', chapter?.css, activeReader.settings);
     $('#readerPage').classList.remove('hidden');
   }
   $('#readerLoading').classList.add('hidden');
   $('#readerPosition').textContent = `${activeReader.position + 1} of ${total}`;
   $('#readerProgress').max = total; $('#readerProgress').value = activeReader.position + 1;
-  $('#readerPrev').disabled = activeReader.position === 0;
-  $('#readerNext').disabled = activeReader.position === total - 1;
+  const internalPages = Boolean(parser && activeReader.settings.mode === 'page');
+  $('#readerPrev').disabled = !internalPages && activeReader.position === 0;
+  $('#readerNext').disabled = !internalPages && activeReader.position === total - 1;
+  updateReaderBookmarkButton();
+  renderReaderToc();
   book.readerPosition = activeReader.position;
   const previousPages = Math.max(0, book.currentPage || 0);
   const positionPages = pdf
@@ -1501,6 +1775,10 @@ async function renderReaderPosition(position, { preserveChrome = false } = {}) {
   book.currentPage = Math.max(previousPages, positionPages);
   if (book.currentPage > previousPages) recordDailyRead();
   dbPut(book).catch(() => {});
+  if (activeReader.settings.curl) {
+    $('#reader').classList.remove('reader-curl-out');
+    requestAnimationFrame(() => $('#reader').classList.add('reader-curl-out'));
+  }
 }
 
 async function openReader(book) {
@@ -1512,13 +1790,14 @@ async function openReader(book) {
     if (book.fileFormat === 'pdf') {
       const pdfjs = configurePdfJs();
       const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), verbosity: 0 }).promise;
-      activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false, zoom: 1, pinching: false };
+      activeReader = { book, pdf, parser: null, position: book.readerPosition || 0, settings: loadReaderSettings(), lastScrollTop: 0, chromeHidden: false, zoom: 1, pinching: false, readingStartedAt: Date.now() };
     } else {
       const init = book.fileFormat === 'epub' ? window.ShelfReaderLibs.initEpubFile : window.ShelfReaderLibs.initMobiFile;
       const parser = await init(file);
-      activeReader = { book, parser, pdf: null, position: book.readerPosition || 0, dark: false, lastScrollTop: 0, chromeHidden: false };
+      activeReader = { book, parser, pdf: null, position: book.readerPosition || 0, settings: loadReaderSettings(), lastScrollTop: 0, chromeHidden: false, readingStartedAt: Date.now() };
     }
     $('#reader').classList.toggle('reader-pdf-mode', Boolean(activeReader.pdf));
+    applyReaderSettings({ rerender: false });
     updateReaderBookmarkButton();
     await renderReaderPosition(activeReader.position);
   } catch (error) {
@@ -1528,12 +1807,18 @@ async function openReader(book) {
 
 function closeReader() {
   if (!activeReader && $('#reader').classList.contains('hidden')) return;
+  if (activeReader?.readingStartedAt) recordReadingTime(Date.now() - activeReader.readingStartedAt);
   activeReader?.pdfRenderTask?.cancel();
   activeReader?.parser?.destroy(); activeReader?.pdf?.destroy(); activeReader = null;
   $('#reader').classList.add('hidden');
   $('#reader').classList.remove('reader-chrome-hidden');
   $('#reader').classList.remove('reader-pdf-mode');
   $('#reader').classList.remove('reader-pdf-zoomed');
+  $('#reader').classList.remove('reader-sepia');
+  $('#reader').classList.remove('reader-dark');
+  $('#reader').classList.remove('reader-curl-out');
+  closeReaderSheets();
+  $('#readerReturn').classList.add('hidden');
   $('#readerBookmark').classList.add('hidden');
   $('#readerHighlight').classList.add('hidden');
   $('#readerPage').srcdoc = ''; document.body.style.overflow = '';
@@ -1933,6 +2218,15 @@ function bindEvents() {
   });
   $('#abandonQuestsBtn').addEventListener('click', abandonAllQuests);
   $('#resetProgressBtn').addEventListener('click', resetAllProgress);
+  $('#editGoalsBtn').addEventListener('click', () => $('#goalEditor').classList.toggle('hidden'));
+  $('#goalEditor').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const goals = { dailyMinutes: Math.max(1, Number($('#dailyGoalInput').value) || 5), yearlyBooks: Math.max(1, Number($('#yearGoalInput').value) || 3) };
+    try { localStorage.setItem(READING_GOALS_KEY, JSON.stringify(goals)); } catch { /* private mode */ }
+    $('#goalEditor').classList.add('hidden');
+    renderReadingGoals();
+    toast('Reading goals updated');
+  });
 
   // Quest tabs
   document.querySelectorAll('.quest-tab').forEach((tab) => {
@@ -1978,9 +2272,53 @@ function bindEvents() {
     else closeModal();
   });
   $('#readerClose').addEventListener('click', closeReader);
+  $('#readerNavigate').addEventListener('click', () => openReaderSheet('readerNavSheet'));
+  $('#readerTheme').addEventListener('click', () => openReaderSheet('readerDisplaySheet'));
+  $('#readerDimmer').addEventListener('click', closeReaderSheets);
+  document.querySelectorAll('[data-close-sheet]').forEach((button) => button.addEventListener('click', closeReaderSheets));
+  document.querySelectorAll('[data-reader-tab]').forEach((button) => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-reader-tab]').forEach((item) => item.classList.toggle('active', item === button));
+    document.querySelectorAll('[data-reader-pane]').forEach((pane) => pane.classList.toggle('active', pane.dataset.readerPane === button.dataset.readerTab));
+    if (button.dataset.readerTab === 'search') setTimeout(() => $('#readerSearchInput').focus(), 50);
+  }));
+  $('#readerNavSheet').addEventListener('click', (event) => {
+    const positionButton = event.target.closest('[data-reader-position]');
+    if (positionButton) jumpToReaderPosition(Number(positionButton.dataset.readerPosition));
+    const bookmarkButton = event.target.closest('[data-bookmark-id]');
+    if (bookmarkButton) {
+      const item = (activeReader?.book.readerBookmarks || []).find((bookmark) => bookmark.id === bookmarkButton.dataset.bookmarkId);
+      if (item) jumpToReaderPosition(item.position, item.scrollRatio);
+    }
+    const highlightButton = event.target.closest('[data-highlight-jump]');
+    if (highlightButton) jumpToReaderHighlight(highlightButton.dataset.highlightJump);
+  });
+  $('#readerSearchForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    searchReader($('#readerSearchInput').value.trim()).catch((error) => { console.error(error); $('#readerSearchStatus').textContent = 'Search could not be completed'; });
+  });
+  const changeReaderSetting = (key, value, { reflow = true } = {}) => {
+    if (!activeReader) return;
+    const restoreRatio = activeReader.parser && reflow ? readerScrollRatio(activeReader.settings.mode) : null;
+    activeReader.settings[key] = value;
+    applyReaderSettings({ rerender: reflow, restoreRatio });
+  };
+  document.querySelectorAll('[data-reader-theme]').forEach((button) => button.addEventListener('click', () => changeReaderSetting('theme', button.dataset.readerTheme)));
+  document.querySelectorAll('[data-reader-align]').forEach((button) => button.addEventListener('click', () => changeReaderSetting('align', button.dataset.readerAlign)));
+  document.querySelectorAll('[data-reader-mode]').forEach((button) => button.addEventListener('click', () => changeReaderSetting('mode', button.dataset.readerMode)));
+  $('#readerFont').addEventListener('change', (event) => changeReaderSetting('font', event.target.value));
+  $('#readerFontSize').addEventListener('change', (event) => changeReaderSetting('fontSize', Number(event.target.value)));
+  $('#readerLineHeight').addEventListener('change', (event) => changeReaderSetting('lineHeight', Number(event.target.value)));
+  $('#readerMargins').addEventListener('change', (event) => changeReaderSetting('margins', Number(event.target.value)));
+  $('#readerBrightness').addEventListener('input', (event) => {
+    if (!activeReader) return;
+    activeReader.settings.brightness = Number(event.target.value);
+    applyReaderSettings({ rerender: false });
+  });
+  $('#readerCurl').addEventListener('change', (event) => changeReaderSetting('curl', event.target.checked, { reflow: false }));
+  $('#readerEitherMargin').addEventListener('change', (event) => changeReaderSetting('eitherMargin', event.target.checked, { reflow: false }));
   $('#readerBookmark').addEventListener('click', saveOrOpenReaderBookmark);
   $('#readerHighlight').addEventListener('mousedown', (event) => event.preventDefault());
-  $('#readerHighlight').addEventListener('click', saveReaderHighlight);
+  $('#readerHighlight').addEventListener('click', () => saveReaderHighlight());
   $('#readerSelectionMenu').addEventListener('pointerdown', (event) => event.preventDefault());
   $('#readerSelectionMenu').addEventListener('click', (event) => {
     const action = event.target.closest('[data-selection-action]')?.dataset.selectionAction;
@@ -1993,18 +2331,40 @@ function bindEvents() {
   $('#readerStage').addEventListener('scroll', (e) => {
     if (activeReader?.pdf) handleReaderScroll(e.currentTarget.scrollTop);
   }, { passive: true });
-  bindReaderDoubleTap($('#readerStage'));
   bindPdfSwipeNavigation($('#readerStage'));
   bindPdfPinchZoom($('#readerStage'));
-  $('#readerPrev').addEventListener('click', () => renderReaderPosition(activeReader.position - 1));
-  $('#readerNext').addEventListener('click', () => renderReaderPosition(activeReader.position + 1));
-  $('#readerProgress').addEventListener('change', (e) => renderReaderPosition(Number(e.target.value) - 1));
-  $('#readerTheme').addEventListener('click', () => {
-    if (!activeReader) return;
-    activeReader.dark = !activeReader.dark;
-    $('#reader').classList.toggle('reader-dark', activeReader.dark);
-    renderReaderPosition(activeReader.position);
+  $('#readerStage').addEventListener('click', (event) => {
+    if (!activeReader?.pdf || event.target !== $('#readerPdf')) return;
+    const rect = $('#readerStage').getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    if (activeReader.settings.mode === 'page' && (x < rect.width * .18 || x > rect.width * .82)) navigateReader(activeReader.settings.eitherMargin ? 1 : (x < rect.width / 2 ? -1 : 1));
+    else setReaderChrome(!activeReader.chromeHidden);
   });
+  $('#readerPrev').addEventListener('click', () => navigateReader(-1));
+  $('#readerNext').addEventListener('click', () => navigateReader(1));
+  $('#readerProgress').addEventListener('change', (e) => renderReaderPosition(Number(e.target.value) - 1));
+  $('#readerReturn').addEventListener('click', () => {
+    if (!activeReader?.returnSpot) return;
+    const current = { position: activeReader.position, scrollRatio: currentReaderScrollRatio() };
+    const spot = activeReader.returnSpot;
+    activeReader.returnSpot = current;
+    activeReader.pendingScrollRatio = spot.scrollRatio;
+    renderReaderPosition(spot.position, { preserveChrome: true });
+  });
+  let tocDrag = null;
+  $('#readerToc').addEventListener('pointerdown', (event) => { tocDrag = { x: event.clientX, position: activeReader?.position || 0 }; });
+  $('#readerToc').addEventListener('pointermove', (event) => {
+    if (!tocDrag || !activeReader || Math.abs(event.clientX - tocDrag.x) < 24) return;
+    event.preventDefault();
+    const total = activeReader.pdf?.numPages || activeReader.parser.getSpine().length;
+    const delta = Math.round((event.clientX - tocDrag.x) / Math.max(80, $('#readerToc').clientWidth) * total);
+    const position = Math.max(0, Math.min(total - 1, tocDrag.position + delta));
+    $('#readerPosition').textContent = `${position + 1} of ${total}`;
+    tocDrag.preview = position;
+  });
+  const finishTocDrag = () => { if (tocDrag?.preview != null) jumpToReaderPosition(tocDrag.preview); tocDrag = null; };
+  $('#readerToc').addEventListener('pointerup', finishTocDrag);
+  $('#readerToc').addEventListener('pointercancel', () => { tocDrag = null; });
 
   document.querySelectorAll('.date-display').forEach((input) => {
     input.addEventListener('click', () => {
@@ -2033,11 +2393,16 @@ function bindEvents() {
   let readerResizeTimer = null;
   window.addEventListener('resize', () => {
     positionCalendar();
-    if (!activeReader?.pdf) return;
+    if (!activeReader) return;
     clearTimeout(readerResizeTimer);
-    readerResizeTimer = setTimeout(() => renderPdfPage().catch((error) => {
-      if (error?.name !== 'RenderingCancelledException') console.error('PDF resize render failed', error);
-    }), 140);
+    readerResizeTimer = setTimeout(() => {
+      if (activeReader?.pdf) renderPdfPage().catch((error) => {
+        if (error?.name !== 'RenderingCancelledException') console.error('PDF resize render failed', error);
+      });
+      else if (activeReader?.parser && activeReader.settings.mode === 'page') {
+        renderReaderPosition(activeReader.position, { preserveChrome: true }).catch((error) => console.error('Reader resize render failed', error));
+      }
+    }, 140);
   });
 
   // Star rating widget. Click sets a permanent rating; hovering only previews.
