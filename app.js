@@ -1128,7 +1128,7 @@ async function repairImportedMetadata() {
   if (visibleChange) await reloadLibrary();
 }
 
-const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1, narratorVoice: 7 };
+const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1 };
 
 function loadReaderSettings() {
   try { return { ...DEFAULT_READER_SETTINGS, ...JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)) }; }
@@ -1173,7 +1173,6 @@ function applyReaderSettings({ rerender = true, restoreRatio = null } = {}) {
   $('#readerCurl').checked = settings.curl;
   $('#readerEitherMargin').checked = settings.eitherMargin;
   $('#readerListenRate').value = settings.listenRate;
-  $('#readerNarratorVoice').value = settings.narratorVoice;
   document.querySelectorAll('[data-reader-theme]').forEach((button) => button.classList.toggle('active', button.dataset.readerTheme === settings.theme));
   document.querySelectorAll('[data-reader-align]').forEach((button) => button.classList.toggle('active', button.dataset.readerAlign === settings.align));
   document.querySelectorAll('[data-reader-mode]').forEach((button) => button.classList.toggle('active', button.dataset.readerMode === settings.mode));
@@ -1759,24 +1758,20 @@ function nativeSpeechPlugin() {
   return window.Capacitor?.isNativePlatform?.() && plugin?.speak ? plugin : null;
 }
 
-async function refreshKokoroStatus() {
+async function refreshSpeechStatus() {
   const status = $('#readerVoiceModelStatus');
-  const download = $('#readerVoiceModelDownload');
   const native = nativeSpeechPlugin();
   if (!native?.getStatus) {
     status.textContent = 'Browser voice is used outside the Android app.';
-    download.classList.add('hidden');
     return false;
   }
   try {
-    const model = await native.getStatus();
-    status.textContent = model.installed ? 'Kokoro is installed and runs privately on this phone.' : 'Kokoro needs a one-time ~99 MB download and temporary room to unpack.';
-    download.classList.toggle('hidden', model.installed);
-    download.disabled = Boolean(model.downloading);
-    if (model.installed && native.prepare) native.prepare().catch(() => {});
-    return Boolean(model.installed);
+    const speech = await native.getStatus();
+    status.textContent = `${speech.engine || 'Android system narrator'} · no extra model download.`;
+    if (native.prepare) native.prepare().catch(() => {});
+    return true;
   } catch {
-    status.textContent = 'Could not check the Kokoro voice model.';
+    status.textContent = 'Could not start the Android system narrator.';
     return false;
   }
 }
@@ -1855,15 +1850,7 @@ async function startReadAloud() {
   try {
     const native = nativeSpeechPlugin();
     if (native) {
-      const model = await native.getStatus();
-      if (!model.installed) {
-        stopReadAloud();
-        openReaderSheet('readerDisplaySheet');
-        await refreshKokoroStatus();
-        toast('Download the Kokoro voices once to start AI narration');
-        return;
-      }
-      await native.speak({ text, speaker: Number(reader.settings.narratorVoice) || 7, rate: Number(reader.settings.listenRate) || 1 });
+      await native.speak({ text, rate: Number(reader.settings.listenRate) || 1 });
     }
     else if ('speechSynthesis' in window) {
       state.status = 'speaking';
@@ -2026,7 +2013,7 @@ async function openReader(book) {
     setNativeReaderSelectionMenuSuppressed(Boolean(activeReader.parser));
     $('#reader').classList.toggle('reader-pdf-mode', Boolean(activeReader.pdf));
     updateReadAloudUi('stopped');
-    refreshKokoroStatus();
+    refreshSpeechStatus();
     applyReaderSettings({ rerender: false });
     updateReaderBookmarkButton();
     await renderReaderPosition(activeReader.position);
@@ -2512,28 +2499,6 @@ function bindEvents() {
     toast('Text-to-speech is not available on this device');
   }));
   $('#readerListenStop').addEventListener('click', stopReadAloud);
-  $('#readerVoiceModelDownload').addEventListener('click', async () => {
-    const native = nativeSpeechPlugin();
-    if (!native?.downloadModel) return;
-    const button = $('#readerVoiceModelDownload');
-    button.disabled = true;
-    button.textContent = 'Downloading Kokoro…';
-    try {
-      await native.downloadModel();
-      toast('Kokoro voices installed');
-    } catch (error) {
-      console.error('Kokoro model download failed', error);
-      toast(error?.message || 'Kokoro download failed');
-    } finally {
-      button.textContent = 'Download Kokoro voices (~99 MB)';
-      await refreshKokoroStatus();
-    }
-  });
-  $('#readerNarratorVoice').addEventListener('change', (event) => {
-    if (!activeReader) return;
-    activeReader.settings.narratorVoice = Number(event.target.value);
-    saveReaderSettings(activeReader.settings);
-  });
   $('#readerListenRate').addEventListener('change', (event) => {
     if (!activeReader) return;
     activeReader.settings.listenRate = Number(event.target.value) || 1;
@@ -2715,12 +2680,6 @@ function bindEvents() {
         readAloud.status = state;
         updateReadAloudUi();
       }
-    });
-    speechPlugin.addListener('modelState', ({ state, progress, message }) => {
-      const status = $('#readerVoiceModelStatus');
-      if (state === 'downloading') status.textContent = `Downloading Kokoro voices… ${progress}%`;
-      else if (state === 'installed') status.textContent = 'Kokoro is installed and runs privately on this phone.';
-      else if (state === 'error') status.textContent = message || 'Kokoro download failed.';
     });
   }
 }
