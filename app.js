@@ -557,8 +557,14 @@ async function checkForUpdate() {
   btn.disabled = true;
   btn.classList.add('checking');
   try {
-    const response = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json' },
+    const updateUrl = new URL(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+    updateUrl.searchParams.set('_', Date.now().toString());
+    const response = await fetch(updateUrl, {
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'Cache-Control': 'no-cache',
+      },
     });
     if (response.status === 404) throw new Error('No GitHub release has been published yet');
     if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
