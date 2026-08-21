@@ -26,8 +26,11 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -43,6 +46,7 @@ public class TextToSpeechPlugin extends Plugin {
     private static final int PLAYBACK_WRITE_SAMPLES = 4096;
     private static final long PLAYBACK_STALL_TIMEOUT_MS = 10_000L;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService playbackWorker = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackGeneration = new AtomicInteger();
     private volatile boolean downloading;
     private volatile boolean paused;
@@ -53,6 +57,15 @@ public class TextToSpeechPlugin extends Plugin {
         final String text;
         final int speaker;
         SpeechPart(String text, int speaker) { this.text = text; this.speaker = speaker; }
+    }
+
+    private static final class SpeechSession {
+        final int generation;
+        final BlockingQueue<GeneratedAudio> audio = new ArrayBlockingQueue<>(3);
+        volatile boolean synthesisFinished;
+        volatile Exception synthesisError;
+        volatile boolean playbackFailed;
+        SpeechSession(int generation) { this.generation = generation; }
     }
 
     @PluginMethod
@@ -125,43 +138,33 @@ public class TextToSpeechPlugin extends Plugin {
         if (parts.isEmpty()) { call.reject("There is no text to read"); return; }
         float speed = Math.max(.6f, Math.min(1.8f, call.getFloat("rate", 1f)));
         int generation = playbackGeneration.incrementAndGet();
+        SpeechSession session = new SpeechSession(generation);
         paused = false;
         stopAudioTrack();
         worker.execute(() -> {
             boolean resolved = false;
-            AudioTrack track = null;
             try {
                 emitState("loading");
                 ensureEngine(model);
                 call.resolve();
                 resolved = true;
-                long framesQueued = 0;
+                playbackWorker.execute(() -> playSession(session));
                 for (SpeechPart part : parts) {
                     // Short chunks make the first spoken audio available much sooner on
                     // mid-range phones, while sentence boundaries keep speech natural.
                     for (String chunk : splitText(part.text, SYNTHESIS_CHUNK_CHARACTERS)) {
-                        if (generation != playbackGeneration.get()) return;
+                        if (generation != playbackGeneration.get() || session.playbackFailed) return;
                         GeneratedAudio audio = engine.generate(chunk, Math.max(0, Math.min(10, part.speaker)), speed);
-                        if (generation != playbackGeneration.get()) return;
-                        while (paused && generation == playbackGeneration.get()) Thread.sleep(35);
-                        if (generation != playbackGeneration.get()) return;
-                        if (track == null) {
-                            track = createAudioTrack(audio.getSampleRate());
-                            audioTrack = track;
-                            track.play();
-                        } else if (track.getSampleRate() != audio.getSampleRate()) {
-                            throw new IllegalStateException("Kokoro changed sample rate during playback");
-                        }
-                        emitState("speaking");
-                        framesQueued = playAudio(audio, generation, track, framesQueued);
+                        if (generation != playbackGeneration.get() || session.playbackFailed) return;
+                        while (generation == playbackGeneration.get() && !session.playbackFailed && !session.audio.offer(audio, 100, TimeUnit.MILLISECONDS)) { }
                     }
                 }
-                if (generation == playbackGeneration.get()) emitState("ended");
             } catch (Exception error) {
-                if (generation == playbackGeneration.get()) emitError(error);
+                session.synthesisError = error;
+                if (!resolved && generation == playbackGeneration.get()) emitError(error);
                 if (!resolved) call.reject(error.getMessage(), error);
             } finally {
-                releaseAudioTrack(track);
+                session.synthesisFinished = true;
             }
         });
     }
@@ -248,7 +251,39 @@ public class TextToSpeechPlugin extends Plugin {
             .build();
     }
 
-    private long playAudio(GeneratedAudio generated, int generation, AudioTrack track, long framesQueued) throws InterruptedException {
+    private void playSession(SpeechSession session) {
+        AudioTrack track = null;
+        long framesQueued = 0;
+        try {
+            while (session.generation == playbackGeneration.get()) {
+                GeneratedAudio generated = session.audio.poll(100, TimeUnit.MILLISECONDS);
+                if (generated == null) {
+                    if (session.synthesisFinished) break;
+                    continue;
+                }
+                if (track == null) {
+                    track = createAudioTrack(generated.getSampleRate());
+                    audioTrack = track;
+                    if (!paused) track.play();
+                    emitState(paused ? "paused" : "speaking");
+                } else if (track.getSampleRate() != generated.getSampleRate()) {
+                    throw new IllegalStateException("Kokoro changed sample rate during playback");
+                }
+                framesQueued = writeAudio(generated, session.generation, track, framesQueued);
+            }
+            if (session.generation != playbackGeneration.get()) return;
+            if (track != null) waitForPlayback(track, session.generation, framesQueued);
+            if (session.synthesisError != null) emitError(session.synthesisError);
+            else emitState("ended");
+        } catch (Exception error) {
+            session.playbackFailed = true;
+            if (session.generation == playbackGeneration.get()) emitError(error);
+        } finally {
+            releaseAudioTrack(track);
+        }
+    }
+
+    private long writeAudio(GeneratedAudio generated, int generation, AudioTrack track, long framesQueued) throws InterruptedException {
         float[] samples = generated.getSamples();
         if (samples.length == 0) return framesQueued;
         int offset = 0;
@@ -262,10 +297,10 @@ public class TextToSpeechPlugin extends Plugin {
             else offset += written;
         }
 
-        // The playback head is cumulative for this page-long stream. Waiting for
-        // the cumulative target preserves every sentence ending without repeatedly
-        // allocating and tearing down Android audio tracks.
-        long targetFrames = framesQueued + offset;
+        return framesQueued + offset;
+    }
+
+    private void waitForPlayback(AudioTrack track, int generation, long targetFrames) throws InterruptedException {
         long lastHead = -1;
         long stalledSince = System.currentTimeMillis();
         while (generation == playbackGeneration.get()) {
@@ -283,7 +318,6 @@ public class TextToSpeechPlugin extends Plugin {
             }
             Thread.sleep(20);
         }
-        return targetFrames;
     }
 
     private void downloadArchive(File destination) throws Exception {
@@ -432,6 +466,7 @@ public class TextToSpeechPlugin extends Plugin {
         stopSpeaking();
         worker.execute(this::releaseEngine);
         worker.shutdown();
+        playbackWorker.shutdown();
         super.handleOnDestroy();
     }
 }
