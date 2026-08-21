@@ -2,8 +2,6 @@ package com.hasyl.shelf;
 
 import android.os.Bundle;
 import android.view.ActionMode;
-import android.view.Menu;
-import android.view.MenuItem;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
@@ -13,6 +11,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(AppUpdaterPlugin.class);
         registerPlugin(ReaderSelectionPlugin.class);
+        registerPlugin(TextToSpeechPlugin.class);
         super.onCreate(savedInstanceState);
     }
 
@@ -20,33 +19,19 @@ public class MainActivity extends BridgeActivity {
         readerSelectionMenuSuppressed = suppressed;
     }
 
+    @SuppressWarnings("deprecation")
+    @Override
+    public ActionMode onWindowStartingActionMode(ActionMode.Callback callback) {
+        if (readerSelectionMenuSuppressed) return null;
+        return super.onWindowStartingActionMode(callback);
+    }
+
     @Override
     public ActionMode onWindowStartingActionMode(ActionMode.Callback callback, int type) {
-        if (!readerSelectionMenuSuppressed) return super.onWindowStartingActionMode(callback, type);
-        return super.onWindowStartingActionMode(new ActionMode.Callback() {
-            @Override
-            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-                boolean created = callback.onCreateActionMode(mode, menu);
-                menu.clear();
-                return created;
-            }
-
-            @Override
-            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                callback.onPrepareActionMode(mode, menu);
-                menu.clear();
-                return true;
-            }
-
-            @Override
-            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                return false;
-            }
-
-            @Override
-            public void onDestroyActionMode(ActionMode mode) {
-                callback.onDestroyActionMode(mode);
-            }
-        }, type);
+        // Clearing WebView's menu after ActionMode is created is too late: the
+        // floating toolbar can already be visible and WebView may repopulate it.
+        // Refuse the native mode while Shelf's reader toolbar owns selection.
+        if (readerSelectionMenuSuppressed) return null;
+        return super.onWindowStartingActionMode(callback, type);
     }
 }
