@@ -333,9 +333,12 @@ function renderQuestList(progress, tab) {
     } else if (isAbandoned) {
       metaHtml = `<span class="quest-abandoned">Abandoned</span>`;
     } else {
-      metaHtml = quest.expiresAt
-        ? `<span class="quest-countdown ${Math.ceil((quest.expiresAt - now) / 86400000) > 1 ? 'safe' : ''}">${Math.max(0, Math.ceil((quest.expiresAt - now) / 86400000))}d left</span>`
-        : '';
+      metaHtml = `<span class="quest-xp">${quest.xp} XP</span>`;
+    }
+
+    let countdownHtml = '';
+    if (!isDone && !isFailed && !isAbandoned && quest.expiresAt) {
+      countdownHtml = `<span class="quest-countdown ${Math.ceil((quest.expiresAt - now) / 86400000) > 1 ? 'safe' : ''}">${Math.max(0, Math.ceil((quest.expiresAt - now) / 86400000))}d left</span>`;
     }
 
     // Progress info (always show for active quests)
@@ -373,7 +376,7 @@ function renderQuestList(progress, tab) {
             ${metaHtml}
           </div>
           <p class="quest-description">${esc(quest.description || 'Make progress in your library.')}</p>
-          ${progressText || progressBarHtml ? `<div class="quest-footer">${progressText}${progressBarHtml}</div>` : ''}
+          ${progressText || progressBarHtml || countdownHtml ? `<div class="quest-footer">${progressText}${countdownHtml}${progressBarHtml}</div>` : ''}
         </div>
         <div class="quest-actions">${actionsHtml}</div>
       </article>`;
@@ -673,8 +676,12 @@ function openModal(book, mode) {
   $('#fFinish').value = book.finishDate || '';
   syncDateDisplay('fStart');
   syncDateDisplay('fFinish');
-  $('#fCurrentPage').value = book.currentPage || '';
-  $('#fPageCount').value = book.pageCount || '';
+  // Clamp current page to total pages (silently, no browser popup)
+  const total = book.pageCount || 0;
+  const cp = $('#fCurrentPage');
+  cp.value = Math.min(book.currentPage || 0, total) || '';
+  const pc = $('#fPageCount');
+  pc.value = book.pageCount || '';
   $('#fNotes').value = book.notes || '';
   $('#deleteBtn').classList.toggle('hidden', mode !== 'edit');
 
@@ -1003,6 +1010,19 @@ function bindEvents() {
   $('#statusFilter').addEventListener('change', (e) => { statusFilter = e.target.value; renderLibrary(); });
   $('#librarySearch').addEventListener('input', (e) => { libraryQuery = e.target.value.trim(); renderLibrary(); });
   $('#sortBy').addEventListener('change', (e) => { sortBy = e.target.value; renderLibrary(); });
+
+  // Silently clamp page inputs to each other (no browser validation popup)
+  $('#fCurrentPage').addEventListener('input', (e) => {
+    const total = Number($('#fPageCount').value) || Infinity;
+    const val = Number(e.target.value);
+    if (val > total) e.target.value = total;
+  });
+  $('#fPageCount').addEventListener('input', (e) => {
+    const total = Number(e.target.value) || Infinity;
+    const cp = $('#fCurrentPage');
+    const val = Number(cp.value);
+    if (total > 0 && val > total) cp.value = total;
+  });
   $('#abandonQuestsBtn').addEventListener('click', abandonAllQuests);
   $('#resetProgressBtn').addEventListener('click', resetAllProgress);
 
