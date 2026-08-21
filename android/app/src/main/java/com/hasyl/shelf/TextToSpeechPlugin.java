@@ -39,6 +39,9 @@ public class TextToSpeechPlugin extends Plugin {
     private static final String MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-en-v0_19.tar.bz2";
     private static final String MODEL_SHA256 = "c9f0dd393615805b0bab050c340834d5e684e732aec91c0e860cd30e982c08bd";
     private static final long MODEL_DOWNLOAD_BYTES = 103248205L;
+    private static final int SYNTHESIS_CHUNK_CHARACTERS = 160;
+    private static final int PLAYBACK_WRITE_SAMPLES = 4096;
+    private static final long PLAYBACK_STALL_TIMEOUT_MS = 10_000L;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicInteger playbackGeneration = new AtomicInteger();
     private volatile boolean downloading;
@@ -60,6 +63,20 @@ public class TextToSpeechPlugin extends Plugin {
         result.put("downloadBytes", MODEL_DOWNLOAD_BYTES);
         result.put("engine", "Kokoro");
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void prepare(PluginCall call) {
+        File model = findModelDirectory();
+        if (model == null) { call.reject("Kokoro voice model is not installed"); return; }
+        worker.execute(() -> {
+            try {
+                ensureEngine(model);
+                call.resolve();
+            } catch (Exception error) {
+                call.reject(error.getMessage(), error);
+            }
+        });
     }
 
     @PluginMethod
@@ -113,12 +130,14 @@ public class TextToSpeechPlugin extends Plugin {
         worker.execute(() -> {
             boolean resolved = false;
             try {
-                ensureEngine(model);
                 emitState("loading");
+                ensureEngine(model);
                 call.resolve();
                 resolved = true;
                 for (SpeechPart part : parts) {
-                    for (String chunk : splitText(part.text, 420)) {
+                    // Short chunks make the first spoken audio available much sooner on
+                    // mid-range phones, while sentence boundaries keep speech natural.
+                    for (String chunk : splitText(part.text, SYNTHESIS_CHUNK_CHARACTERS)) {
                         if (generation != playbackGeneration.get()) return;
                         GeneratedAudio audio = engine.generate(chunk, Math.max(0, Math.min(10, part.speaker)), speed);
                         if (generation != playbackGeneration.get()) return;
@@ -205,20 +224,59 @@ public class TextToSpeechPlugin extends Plugin {
     private void playAudio(GeneratedAudio generated, int generation) throws InterruptedException {
         float[] samples = generated.getSamples();
         if (samples.length == 0) return;
+        int sampleRate = generated.getSampleRate();
+        int minimumBuffer = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_FLOAT
+        );
+        if (minimumBuffer <= 0) throw new IllegalStateException("This phone could not create a speech audio buffer");
+        int bufferBytes = Math.max(minimumBuffer, Math.min(samples.length, sampleRate / 2) * Float.BYTES);
         AudioTrack track = new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(generated.getSampleRate()).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(samples.length * 4)
-            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(bufferBytes)
+            .setTransferMode(AudioTrack.MODE_STREAM)
             .build();
         audioTrack = track;
-        track.write(samples, 0, samples.length, AudioTrack.WRITE_BLOCKING);
-        track.play();
-        long deadline = System.currentTimeMillis() + Math.round(samples.length * 1000d / generated.getSampleRate()) + 2000;
-        while (generation == playbackGeneration.get() && track.getPlaybackHeadPosition() < samples.length && System.currentTimeMillis() < deadline) Thread.sleep(35);
-        if (audioTrack == track) audioTrack = null;
-        try { track.stop(); } catch (Exception ignored) { }
-        track.release();
+        try {
+            track.play();
+            int offset = 0;
+            while (offset < samples.length && generation == playbackGeneration.get()) {
+                while (paused && generation == playbackGeneration.get()) Thread.sleep(35);
+                if (generation != playbackGeneration.get()) return;
+                int count = Math.min(PLAYBACK_WRITE_SAMPLES, samples.length - offset);
+                int written = track.write(samples, offset, count, AudioTrack.WRITE_BLOCKING);
+                if (written < 0) throw new IllegalStateException("Speech playback failed (" + written + ")");
+                if (written == 0) Thread.sleep(10);
+                else offset += written;
+            }
+
+            // A streaming write completes when samples enter AudioTrack's buffer, not
+            // when the speaker has played them. Wait for every frame so the end of a
+            // sentence cannot be cut off when the track is released.
+            long lastHead = -1;
+            long stalledSince = System.currentTimeMillis();
+            while (generation == playbackGeneration.get()) {
+                while (paused && generation == playbackGeneration.get()) {
+                    stalledSince = System.currentTimeMillis();
+                    Thread.sleep(35);
+                }
+                long head = Integer.toUnsignedLong(track.getPlaybackHeadPosition());
+                if (head >= samples.length) break;
+                if (head != lastHead) {
+                    lastHead = head;
+                    stalledSince = System.currentTimeMillis();
+                } else if (System.currentTimeMillis() - stalledSince > PLAYBACK_STALL_TIMEOUT_MS) {
+                    throw new IllegalStateException("Speech playback stopped responding");
+                }
+                Thread.sleep(20);
+            }
+        } finally {
+            if (audioTrack == track) audioTrack = null;
+            try { track.stop(); } catch (Exception ignored) { }
+            track.release();
+        }
     }
 
     private void downloadArchive(File destination) throws Exception {
