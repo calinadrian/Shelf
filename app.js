@@ -1128,7 +1128,7 @@ async function repairImportedMetadata() {
   if (visibleChange) await reloadLibrary();
 }
 
-const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1, narratorVoice: 7, femaleVoice: 1, maleVoice: 9 };
+const DEFAULT_READER_SETTINGS = { theme: 'sepia', font: 'serif', fontSize: 18, lineHeight: 1.7, margins: 8, brightness: 100, align: 'left', mode: 'scroll', curl: true, eitherMargin: false, listenRate: 1, narratorVoice: 7 };
 
 function loadReaderSettings() {
   try { return { ...DEFAULT_READER_SETTINGS, ...JSON.parse(localStorage.getItem(READER_SETTINGS_KEY)) }; }
@@ -1174,8 +1174,6 @@ function applyReaderSettings({ rerender = true, restoreRatio = null } = {}) {
   $('#readerEitherMargin').checked = settings.eitherMargin;
   $('#readerListenRate').value = settings.listenRate;
   $('#readerNarratorVoice').value = settings.narratorVoice;
-  $('#readerFemaleVoice').value = settings.femaleVoice;
-  $('#readerMaleVoice').value = settings.maleVoice;
   document.querySelectorAll('[data-reader-theme]').forEach((button) => button.classList.toggle('active', button.dataset.readerTheme === settings.theme));
   document.querySelectorAll('[data-reader-align]').forEach((button) => button.classList.toggle('active', button.dataset.readerAlign === settings.align));
   document.querySelectorAll('[data-reader-mode]').forEach((button) => button.classList.toggle('active', button.dataset.readerMode === settings.mode));
@@ -1783,37 +1781,6 @@ async function refreshKokoroStatus() {
   }
 }
 
-function kokoroVoiceSegments(text, settings) {
-  const segments = [];
-  const voices = {
-    narrator: Number(settings.narratorVoice) || 7,
-    female: Number(settings.femaleVoice) || 1,
-    male: Number(settings.maleVoice) || 9,
-  };
-  let cursor = 0;
-  let unknownDialogue = 0;
-  const quote = /[“"]([^”"]{2,})[”"]/g;
-  const append = (value, speaker) => {
-    const cleaned = value.replace(/\s+/g, ' ').trim();
-    if (!cleaned) return;
-    const previous = segments.at(-1);
-    if (previous?.speaker === speaker) previous.text += ` ${cleaned}`;
-    else segments.push({ text: cleaned, speaker });
-  };
-  for (const match of text.matchAll(quote)) {
-    append(text.slice(cursor, match.index), voices.narrator);
-    const context = text.slice(Math.max(0, match.index - 100), Math.min(text.length, match.index + match[0].length + 100)).toLowerCase();
-    const speechWords = '(?:said|asked|replied|answered|cried|called|whispered|shouted|murmured|continued)';
-    const female = new RegExp(`(?:\\b(?:she|her|hers|miss|mrs|ms)\\b.{0,45}${speechWords}|${speechWords}.{0,45}\\b(?:she|her|hers|miss|mrs|ms)\\b)`).test(context);
-    const male = new RegExp(`(?:\\b(?:he|him|his|mr|sir)\\b.{0,45}${speechWords}|${speechWords}.{0,45}\\b(?:he|him|his|mr|sir)\\b)`).test(context);
-    const speaker = female !== male ? (female ? voices.female : voices.male) : (unknownDialogue++ % 2 ? voices.male : voices.female);
-    append(match[1], speaker);
-    cursor = match.index + match[0].length;
-  }
-  append(text.slice(cursor), voices.narrator);
-  return segments.length ? segments : [{ text, speaker: voices.narrator }];
-}
-
 function updateReadAloudUi(status = activeReader?.readAloud?.status || 'stopped') {
   const button = $('#readerListen');
   const speaking = status === 'speaking' || status === 'loading';
@@ -1896,7 +1863,7 @@ async function startReadAloud() {
         toast('Download the Kokoro voices once to start AI narration');
         return;
       }
-      await native.speak({ text, segments: kokoroVoiceSegments(text, reader.settings), rate: Number(reader.settings.listenRate) || 1 });
+      await native.speak({ text, speaker: Number(reader.settings.narratorVoice) || 7, rate: Number(reader.settings.listenRate) || 1 });
     }
     else if ('speechSynthesis' in window) {
       state.status = 'speaking';
@@ -2562,12 +2529,10 @@ function bindEvents() {
       await refreshKokoroStatus();
     }
   });
-  [['readerNarratorVoice', 'narratorVoice'], ['readerFemaleVoice', 'femaleVoice'], ['readerMaleVoice', 'maleVoice']].forEach(([id, key]) => {
-    $(`#${id}`).addEventListener('change', (event) => {
-      if (!activeReader) return;
-      activeReader.settings[key] = Number(event.target.value);
-      saveReaderSettings(activeReader.settings);
-    });
+  $('#readerNarratorVoice').addEventListener('change', (event) => {
+    if (!activeReader) return;
+    activeReader.settings.narratorVoice = Number(event.target.value);
+    saveReaderSettings(activeReader.settings);
   });
   $('#readerListenRate').addEventListener('change', (event) => {
     if (!activeReader) return;
